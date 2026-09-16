@@ -1020,7 +1020,12 @@ function renderIterate(data) {
         return `<li>📍 ${escapeHtml(entry)}（新增 ${e.added_count||0} / 删除 ${e.removed_count||0}）<ul style="margin:2px 0 4px">${items}</ul></li>`;
       }).join('');
       const hints = (fb.aggregate_hints || []).map(h => `<li style="color:#b45309">🧭 ${escapeHtml(h)}</li>`).join('');
-      fbHtml = `<div style="margin-top:6px"><b>🔍 本轮回灌</b><ul style="margin:2px 0 0 16px;font-size:12px">${hints}${diag}</ul></div>`;
+      const pruned = Object.entries(fb.entries || {})
+        .flatMap(([entry, e]) => (e.variant_pruned || []).map(d =>
+          `<li style="margin-left:16px;color:#6b7280">✂ 收敛变体：${escapeHtml(d)}（同一缺陷只保留一条复现用例）</li>`)).join('');
+      fbHtml = `<div style="margin-top:6px"><b>🔍 本轮回灌</b><ul style="margin:2px 0 0 16px;font-size:12px">${hints}${diag}${pruned}</ul></div>`;
+    } else {
+      fbHtml = `<div style="font-size:12px;color:#888;margin-top:4px">（本轮回灌被跳过——已触发停止条件；本轮新出现的失败未诊断，可再次执行回灌/迭代处理）</div>`;
     }
     return `<div style="margin-top:8px;border-top:1px dashed #ddd;padding-top:6px">
       <b>第 ${r.round} 轮</b>：<span>${statLine}</span>

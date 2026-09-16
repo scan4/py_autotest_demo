@@ -952,6 +952,29 @@ def _feedback_core(session, source_dir: str, provider: str, entry_filter: str = 
                         c["request"] = b.get("request")
                     c["_bug_repro_restored"] = True
 
+        # 复现用例变体收敛：同一缺陷只保留一条复现用例。
+        # 实测 LLM 会给已知缺陷"复制"变体用例（如"无 Authorization 头"变体）——描述
+        # 带后缀逃过精确去重，导致 failed_bug 虚高与诊断重复输出
+        import re as _re
+
+        def _norm_desc(s: str) -> str:
+            return _re.sub(r"（[^）]*）|\[[^\]]*\]|\s+", "", s or "")
+
+        def _same_repro(desc: str, base_desc: str) -> bool:
+            a, b = _norm_desc(desc), _norm_desc(base_desc)
+            return bool(a) and bool(b) and (a == b or a.startswith(b) or b.startswith(a))
+
+        variant_pruned: list[str] = []
+        for reg_desc, reg in registry_cases.items():
+            anchor = next((c for c in refined_dicts if c.get("description") == reg_desc), None)
+            if anchor is None:
+                continue
+            variants = [c for c in refined_dicts
+                        if c is not anchor and _same_repro(c.get("description", ""), reg_desc)]
+            for v in variants:
+                refined_dicts.remove(v)
+            variant_pruned.extend(v.get("description", "") for v in variants)
+
         session.test_cases[real_entry] = refined_dicts
         if store is not None:
             try:
@@ -966,6 +989,7 @@ def _feedback_core(session, source_dir: str, provider: str, entry_filter: str = 
                               "by_category": {f["category"]: sum(1 for x in failures if x["category"] == f["category"])
                                               for f in failures}},
             "restored_potential_bug": restored,
+            "variant_pruned": variant_pruned,
             "original_cases": cases,
             "refined_cases": refined_dicts,
             "added": added, "removed": removed,
