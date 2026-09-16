@@ -361,10 +361,20 @@ class FixAgent:
             _git(project, "add", "-A")
             _git(project, "commit", "-m",
                  f"fix: {finding.get('description', '')}（AI 修复，bug #{finding['id']}）\n\n{summary}")
+            # 修复分支推送到被测项目自己的远端（异地备份 + 可随时复原/审阅）。
+            # push 失败（网络等）不阻塞流程——本地分支是真相源，可稍后手动 push
+            push_note = "（未推远端：项目无 remote）"
+            try:
+                if _git(project, "remote"):
+                    _git(project, "push", "origin", branch, check=False)
+                    push_note = f"（已推送 origin/{branch}）"
+                task["log"].append(f"修复分支推送：{push_note}")
+            except Exception as e:
+                task["log"].append(f"修复分支推送失败（不影响本地结果，可稍后手动 push）: {e}")
             patch = _git(project, "diff", orig_branch, branch)
             task["patch"] = patch
             task["branch"] = branch
-            task["summary"] = f"修复成功（分支 {branch}，待人工审阅 merge）：{summary}"
+            task["summary"] = f"修复成功（分支 {branch}，待人工审阅 merge）{push_note}：{summary}"
         else:
             _git(project, "checkout", orig_branch, check=False)
             _git(project, "branch", "-D", branch, check=False)
