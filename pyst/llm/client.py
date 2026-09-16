@@ -148,6 +148,18 @@ class LLMClient:
             max_tokens: 最大生成 token 数
             **kwargs: 透传给请求体的其他参数（如 top_p）
         """
+        message = self.chat_raw(messages, temperature=temperature,
+                                max_tokens=max_tokens, **kwargs)
+        return message.get("content") or ""
+
+    def chat_raw(self, messages: list[dict[str, Any]], temperature: float = 0.7,
+                 max_tokens: int | None = None, **kwargs: Any) -> dict[str, Any]:
+        """发起一次 chat/completions 请求，返回完整的 assistant 消息 dict。
+
+        与 chat() 的区别：支持 tools（function calling），并保留原始消息结构——
+        当模型发起 tool_calls 时，返回值含 "tool_calls" 字段（而非 content），
+        由调用方执行工具后以 {"role":"tool","tool_call_id":...,"content":...} 回填。
+        """
         url = f"{self.base_url}/v1/chat/completions"
         payload: dict[str, Any] = {
             "model": self.model,
@@ -174,7 +186,7 @@ class LLMClient:
                 resp.raise_for_status()
                 data = resp.json()
                 try:
-                    return data["choices"][0]["message"]["content"]
+                    return data["choices"][0]["message"]
                 except (KeyError, IndexError, TypeError):
                     raise RuntimeError(f"LLM 响应格式异常: {data}")
             except (requests.exceptions.ConnectTimeout,

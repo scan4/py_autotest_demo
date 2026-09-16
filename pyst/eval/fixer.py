@@ -34,23 +34,51 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..llm.client import LLMClient
-from ..core.generate import _parse_llm_json
-from .review import _extract_json_object
 
 _FIX_SYSTEM = """你是被测项目的自动修复 Agent。已确认的服务端缺陷证据和复现请求已给出。
 你的任务：阅读相关源码，修改业务代码使缺陷消失，且不破坏其他测试。
 
 【铁律——违反即任务失败】
-1. 只修改业务代码；禁止修改任何测试文件、测试数据
+1. 只修改业务代码；禁止修改任何测试文件、测试数据（工具会拒绝）
 2. 最小修复：只改缺陷相关的逻辑；禁止通过吞异常、放宽/删除校验、更改业务语义等方式迎合测试
 3. 修复目标是"行为正确"（如空白输入应被校验拒绝），不是"让某个状态码出现"
 
-【可用工具】每轮输出一个 JSON 对象（严格 JSON，无其他文字）：
-1. {"action":"read_source","file":"相对路径","start":1,"end":200}   // 读源码片段（默认全文，限 400 行）
-2. {"action":"edit","file":"相对路径","old":"文件中的原文精确片段","new":"替换文本"}  // old 必须在文件中唯一出现
-3. {"action":"run_tests"}   // 重启被测服务并执行：缺陷复现请求 + 全量用例回归，返回判定
-4. {"action":"finish","summary":"修复说明"}   // 认为完成时调用
-多轮使用工具收集信息→修改→run_tests 验证→必要时继续修改。finish 前必须至少跑过一次 run_tests。"""
+【工作方式】用提供的工具完成修复：read_source 定位相关代码（如数据模型/校验逻辑）
+→ edit 修改 → run_tests 验证（会重启被测服务并跑复现请求+全量回归）→ 通过则 finish。
+finish 前必须至少跑过一次 run_tests。"""
+
+# 原生 function calling 工具定义（OpenAI tools 协议）：description/parameters 即工具的
+# 协议级描述——服务端约束模型输出结构化 tool_calls，不再依赖 prompt 模仿 JSON 格式
+FIX_TOOLS: list[dict[str, Any]] = [
+    {"type": "function", "function": {
+        "name": "read_source",
+        "description": "读取被测项目源码文件的指定行区间（带行号）。用于定位缺陷相关代码。",
+        "parameters": {"type": "object", "properties": {
+            "file": {"type": "string", "description": "项目内相对路径，如 backend/app/models.py"},
+            "start": {"type": "integer", "description": "起始行号（从 1 开始），默认 1"},
+            "end": {"type": "integer", "description": "结束行号，默认 400"}},
+            "required": ["file"]}}},
+    {"type": "function", "function": {
+        "name": "edit",
+        "description": ("编辑文件：把 old（文件中唯一出现的原文精确片段，含缩进）替换为 new。"
+                        "禁止修改测试文件（会被拒绝）。多次调用可完成多处修改。"),
+        "parameters": {"type": "object", "properties": {
+            "file": {"type": "string", "description": "项目内相对路径"},
+            "old": {"type": "string", "description": "要替换的原文精确片段（必须在文件中唯一）"},
+            "new": {"type": "string", "description": "替换后的文本"}},
+            "required": ["file", "old", "new"]}}},
+    {"type": "function", "function": {
+        "name": "run_tests",
+        "description": ("重启被测服务（加载已修改的代码）并执行验证：缺陷复现请求 + 全量用例回归。"
+                        "返回缺陷行为是否消失、回归统计与验收判定。修改代码后必须调用。"),
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "finish",
+        "description": "声明修复完成（必须至少跑过一次 run_tests 且验收通过）。summary 写清修复内容。",
+        "parameters": {"type": "object", "properties": {
+            "summary": {"type": "string", "description": "修复说明：改了什么、为什么能消除缺陷"}},
+            "required": ["summary"]}}},
+]
 
 
 def _git(project: str, *args: str, check: bool = True) -> str:
@@ -251,61 +279,77 @@ class FixAgent:
         replay_status = None
         success = False
         summary = ""
+        ran_tests = False
         try:
             for turn in range(1, self.max_turns + 1):
                 task["log"].append(f"--- Agent 轮次 {turn} ---")
-                resp = client.chat(messages, temperature=0.2)
-                messages.append({"role": "assistant", "content": resp})
-                obj_text = _extract_json_object(resp)
-                try:
-                    action = _parse_llm_json(obj_text)
-                    if not isinstance(action, dict):
-                        raise ValueError("非 JSON 对象")
-                except Exception as e:
-                    result = f"错误：无法解析动作 JSON（{e}），请严格按协议输出"
-                    messages.append({"role": "user", "content": f"工具结果: {result}"})
+                # 原生 function calling：tools schema 约束模型输出结构化 tool_calls
+                message = client.chat_raw(messages, temperature=0.2, tools=FIX_TOOLS)
+                messages.append(message)   # assistant 消息（含 tool_calls 或纯文本）
+                tool_calls = message.get("tool_calls") or []
+                if not tool_calls:
+                    # 模型直接输出文字（未调工具）：提醒它用工具
+                    messages.append({"role": "user",
+                                     "content": "请通过工具执行操作（read_source/edit/run_tests/finish）。"})
                     continue
-                act = action.get("action")
-                if act == "read_source":
-                    result = self._tool_read_source(action.get("file", ""),
-                                                    action.get("start", 1), action.get("end", 400))
-                elif act == "edit":
-                    result = self._tool_edit(action.get("file", ""),
-                                             action.get("old", ""), action.get("new", ""))
-                elif act == "run_tests":
-                    _restart_service(self.base, self.service_cmd, self.log)
-                    replay = execute_http_case(
-                        {"_entry": finding["entry"], "description": finding.get("description", ""),
-                         "request": finding.get("request"),
-                         "expected_status": finding.get("expected_status")},
-                        self.base, token=self.token)
-                    replay_status = replay.get("status")
-                    still = (replay_status == recorded) if recorded else None
-                    run_results, stats = execute_suite(
-                        [{**c, "_entry": e} for e, cs in self.session.test_cases.items()
-                         for c in cs], self.base, token=self.token)
-                    self.last_results = run_results   # 验收对比用（新增 FAIL 检测）
-                    ok, why = self._validate(baseline, replay_status)
-                    result = (f"复现请求: 实际 {replay_status}（缺陷行为 {recorded}，"
-                              f"{'仍存在' if still else '已消失'}）\n"
-                              f"回归统计: {stats}\n验收: {why}")
-                    task["log"].append(f"run_tests: {why}")
-                    if ok:
-                        summary = f"修复验证通过：{why}"
-                        messages.append({"role": "user", "content": f"工具结果: {result}\n验收通过，请调用 finish。"})
+                stop = False
+                for tc in tool_calls:
+                    fn = (tc.get("function") or {})
+                    name = fn.get("name", "")
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except Exception as e:
+                        args = {}
+                        result = f"错误：工具参数不是合法 JSON（{e}）"
+                    if name == "read_source":
+                        result = self._tool_read_source(args.get("file", ""),
+                                                        args.get("start", 1), args.get("end", 400))
+                    elif name == "edit":
+                        result = self._tool_edit(args.get("file", ""),
+                                                 args.get("old", ""), args.get("new", ""))
+                    elif name == "run_tests":
+                        _restart_service(self.base, self.service_cmd, self.log)
+                        replay = execute_http_case(
+                            {"_entry": finding["entry"], "description": finding.get("description", ""),
+                             "request": finding.get("request"),
+                             "expected_status": finding.get("expected_status")},
+                            self.base, token=self.token)
+                        replay_status = replay.get("status")
+                        still = (replay_status == recorded) if recorded else None
+                        run_results, stats = execute_suite(
+                            [{**c, "_entry": e} for e, cs in self.session.test_cases.items()
+                             for c in cs], self.base, token=self.token)
+                        self.last_results = run_results   # 验收对比用（新增 FAIL 检测）
+                        ran_tests = True
+                        ok, why = self._validate(baseline, replay_status)
+                        result = (f"复现请求: 实际 {replay_status}（缺陷行为 {recorded}，"
+                                  f"{'仍存在' if still else '已消失'}）\n"
+                                  f"回归统计: {stats}\n验收: {why}")
+                        task["log"].append(f"run_tests: {why}")
+                        if ok:
+                            summary = f"修复验证通过：{why}"
+                            stop = True
+                    elif name == "finish":
+                        if not ran_tests:
+                            result = "错误：finish 前必须至少调用一次 run_tests 验证"
+                        else:
+                            summary = args.get("summary", "")
+                            stop = True
+                    else:
+                        result = f"错误：未知工具 {name}"
+                    messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                                     "content": result})
+                    if stop:
                         break
-                elif act == "finish":
-                    summary = action.get("summary", "")
+                if stop:
                     break
-                else:
-                    result = f"错误：未知 action {act}"
-                messages.append({"role": "user", "content": f"工具结果: {result}"})
         finally:
             pass
 
-        # 验收与收尾
-        if summary and replay_status is not None:
-            ok, why = self._validate(baseline, replay_status)
+        # 验收与收尾：finish 仅在 run_tests（含验收）之后被允许，summary 即验收结论
+        if summary and ran_tests:
+            ok = True
+            why = "验收通过"
         elif summary:
             ok, why = False, "未执行过 run_tests 验证"
         else:
