@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pythonTest - AI 测试用例生成平台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #333; }
+  header { background: #1a1a2e; color: #fff; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .sub { font-size: 12px; color: #aaa; margin-left: 12px; }
+  .container { max-width: 1400px; margin: 0 auto; padding: 20px; display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
+  .card { background: #fff; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.06); padding: 18px; }
+  .card h3 { font-size: 15px; margin-bottom: 12px; color: #1a1a2e; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+
+  /* 左侧：文件夹选择 */
+  .dir-browser { height: calc(100vh - 120px); overflow-y: auto; }
+  .dir-item { padding: 8px 10px; cursor: pointer; border-radius: 6px; display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .dir-item:hover { background: #f0f4ff; }
+  .dir-item.selected { background: #e3ecff; color: #1a1a2e; font-weight: 600; }
+  .dir-item .icon { color: #f0b429; }
+  .dir-item .chevron { margin-left: auto; color: #999; font-size: 11px; }
+  .dir-children { padding-left: 20px; border-left: 1px solid #eee; margin-left: 8px; }
+
+  /* 右侧 */
+  .step { margin-bottom: 20px; }
+  .step-title { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .step-num { width: 26px; height: 26px; border-radius: 50%; background: #4361ee; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; }
+  .step-title span:last-child { font-weight: 600; font-size: 15px; }
+  .btn { padding: 8px 18px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: .2s; }
+  .btn-primary { background: #4361ee; color: #fff; }
+  .btn-primary:hover { background: #3451d1; }
+  .btn-primary:disabled { background: #aab4d8; cursor: not-allowed; }
+  .btn-success { background: #2ec4b6; color: #fff; }
+  .btn-success:hover { background: #25a89c; }
+  .btn-warning { background: #f0a202; color: #fff; }
+  .btn-danger { background: #e63946; color: #fff; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .btn-group { display: flex; gap: 10px; margin-top: 10px; }
+
+  .stats { display: flex; gap: 20px; margin: 12px 0; font-size: 13px; color: #555; }
+  .stat-box { background: #f8f9fc; padding: 10px 16px; border-radius: 8px; }
+  .stat-box b { color: #4361ee; font-size: 18px; display: block; }
+
+  /* 功能点列表 */
+  .fp-item { padding: 10px; border: 1px solid #eef; border-radius: 8px; margin-bottom: 8px; cursor: pointer; transition: .2s; }
+  .fp-item:hover { border-color: #4361ee; background: #f8faff; }
+  .fp-item.selected { border-color: #4361ee; background: #eef2ff; }
+  .fp-item .fp-entry { font-weight: 600; font-size: 13px; color: #1a1a2e; }
+  .fp-item .fp-meta { font-size: 11px; color: #888; margin-top: 4px; }
+
+  /* 测试用例 */
+  .case-item { border: 1px solid #eef; border-radius: 8px; padding: 12px; margin-bottom: 10px; background: #fdfdff; }
+  .case-item .case-desc { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+  .case-item .case-req { background: #f4f6fb; padding: 8px; border-radius: 6px; font-size: 12px; color: #555; font-family: monospace; white-space: pre-wrap; }
+  .case-item .case-steps { font-size: 12px; color: #666; margin-top: 6px; }
+  .diff-added { border-color: #86efac; background: #f0fdf4; }
+  .diff-removed { border-color: #fca5a5; background: #fef2f2; text-decoration: none; }
+  .prd-priority { font-size: 11px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+  .pri-high { background: #e63946; }
+  .pri-mid { background: #f0a202; }
+  .pri-low { background: #9ca3af; }
+  .review-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 13px; }
+  .review-box .score { font-size: 24px; font-weight: 700; color: #166534; }
+  .review-box ul { margin: 6px 0 0 18px; color: #444; }
+
+  /* 执行结果 */
+  .result-item { border: 1px solid #eee; border-radius: 8px; padding: 10px; margin-bottom: 8px; font-size: 13px; }
+  .result-item .status { font-weight: 700; }
+  .status-200 { color: #166534; } .status-4xx { color: #b45309; } .status-5xx { color: #b91c1c; }
+  .result-item pre { background: #f4f6fb; padding: 8px; border-radius: 6px; font-size: 11px; margin-top: 6px; overflow-x: auto; white-space: pre-wrap; }
+
+  .log { background: #1a1a2e; color: #7dd3fc; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  .loading { color: #4361ee; font-size: 13px; margin: 8px 0; }
+  .empty { color: #999; font-size: 13px; padding: 16px; text-align: center; }
+  input[type=number] { width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 6px; }
+  select { padding: 6px; border: 1px solid #ccc; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>pythonTest<span class="sub">AST 静态分析 → 功能点 → LLM 生成测试用例 → 评审 → 执行</span></h1></div>
+  <div><button class="btn btn-warning" onclick="resetAll()">重置会话</button></div>
+</header>
+
+<div class="container">
+  <!-- 左侧：测试模式切换 + 文件夹浏览器 -->
+  <div class="card dir-browser">
+    <h3>🧭 测试模式</h3>
+    <div class="btn-group" style="margin-bottom:10px">
+      <button class="btn btn-primary" id="btnModeFeature" onclick="switchMode('feature')" title="分析源码 → 生成用例 → 评审 → 执行">🧪 功能测试</button>
+      <button class="btn" id="btnModeRequirement" onclick="switchMode('requirement')" title="上传 PRD 需求文档 → 提取功能点 → 生成用例">📋 需求测试</button>
+    </div>
+    <div style="font-size:12px;color:#888;margin-bottom:12px" id="modeTip">功能测试：分析源码 → 生成用例 → 评审 → 执行</div>
+
+    <div id="dirSection">
+      <h3>📁 选择文件夹</h3>
+      <div id="dirPath" style="margin-bottom:10px;font-size:12px;color:#555"></div>
+      <div id="dirTree"></div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btnAnalyze" onclick="analyzeSelected()" disabled>分析选中文件夹</button>
+      </div>
+    </div>
+    <div id="reqSection" style="display:none;font-size:13px;color:#666">
+      需求测试：在右侧上传 PRD 需求文档，自动提取功能点并生成测试用例（无需选择源码目录）。
+    </div>
+  </div>
+
+  <!-- 右侧：流程 -->
+  <div>
+    <!-- 需求测试模式：PRD 需求文档分析 -->
+    <div id="modeRequirement" style="display:none">
+    <div class="card step" style="border-color:#2ec4b6">
+      <div class="step-title"><div class="step-num" style="background:#2ec4b6">P</div><span>需求测试：PRD 需求文档分析</span></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label for="prdFile" class="btn btn-success" style="cursor:pointer">📄 上传 PRD 文档（.md/.docx/.pdf/.txt）</label>
+        <input type="file" id="prdFile" accept=".md,.txt,.markdown,.docx,.pdf" style="display:none" onchange="uploadPrd(this)">
+        <span id="prdFileName" style="font-size:13px;color:#888"></span>
+      </div>
+      <div id="prdLoading"></div>
+      <div id="prdResult" style="margin-top:12px"></div>
+    </div>
+    </div><!-- /modeRequirement -->
+
+    <div id="modeFeature">
+
+    <!-- 步骤1：分析结果 -->
+    <div class="card step">
+      <div class="step-title"><div class="step-num">1</div><span>分析代码 → 功能点</span></div>
+      <div class="btn-group" style="margin-bottom:8px">
+        <button class="btn" onclick="selectAllFp()" title="选中全部功能点">✅ 全选</button>
+        <button class="btn" onclick="invertFp()" title="已选变未选、未选变已选">🔄 反选</button>
+        <button class="btn" onclick="clearFp()" title="取消全部选择">⬜ 清空</button>
+        <span style="font-size:12px;color:#888;align-self:center" id="fpSelTip">未分析</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <input type="text" id="baseUrlInput" placeholder="被测服务根地址，如 http://localhost:8100（可选，探测运行中服务的真实接口 OpenAPI）" style="flex:1;min-width:260px">
+        <button class="btn btn-success" onclick="probeOpenapi()" title="从运行中的服务拉取 openapi.json，把真实 URL 关联到功能点">🔎 探测接口</button>
+      </div>
+      <div id="analyzeResult">
+        <div class="empty">选择左侧文件夹，点击"分析选中文件夹"开始</div>
+      </div>
+    </div>
+
+    <!-- 步骤2：生成测试用例 -->
+    <div class="card step">
+      <div class="step-title"><div class="step-num">2</div><span>生成测试用例</span></div>
+      <div class="stats">
+        <div class="stat-box">功能点数 <b id="fpCount">0</b></div>
+        <div class="stat-box">已选功能点 <b id="fpSelected">0</b></div>
+        <div class="stat-box">用例数 <b id="caseCount">0</b></div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btnGenerate" onclick="generateCases()" disabled>生成选中功能点的用例</button>
+        <label style="font-size:13px;color:#666;align-self:center">条数 <input type="number" id="caseCountInput" value="5" min="1" max="20"></label>
+        <label style="font-size:13px;color:#666;align-self:center" title="调用子图搜索深度：1=仅入口，2=含直接下游，数值越大覆盖越深但越耗 token">深度
+          <input type="number" id="depthInput" value="1" min="1" max="5"></label>
+        <select id="providerSel"><option value="deepseek">DeepSeek</option><option value="qwen">通义千问</option></select>
+        <select id="testLevelSel" style="align-self:center">
+          <option value="api">HTTP接口用例</option>
+          <option value="func">纯函数用例</option>
+        </select>
+      </div>
+      <div id="funcModuleRow" style="display:none;margin-top:6px;font-size:13px;color:#666">
+        被测纯函数模块(.py): <input type="text" id="funcModuleInput" style="width:60%" placeholder="如 /path/to/module.py" value="">
+        <span style="color:#888">（纯函数模式必填，被测函数入口在下方功能点里指定）</span>
+      </div>
+      <div id="caseList" style="margin-top:12px"></div>
+    </div>
+
+    <!-- 步骤3：评审 -->
+    <div class="card step">
+      <div class="step-title"><div class="step-num">3</div><span>AI 评审</span></div>
+      <div class="btn-group">
+        <button class="btn btn-warning" id="btnReview" onclick="reviewCases()" disabled>AI 评审所有用例</button>
+      </div>
+      <div id="reviewResult"></div>
+    </div>
+
+    <!-- 步骤4：执行 -->
+    <div class="card step">
+      <div class="step-title"><div class="step-num">4</div><span>执行测试用例</span></div>
+      <div class="btn-group">
+        <button class="btn btn-danger" onclick="executeCases()" title="真实发送 HTTP 请求并断言 PASS/FAIL">执行测试用例</button>
+        <button id="btnFeedback" class="btn btn-primary" onclick="runFeedback()" disabled title="把失败用例结构化后回灌 LLM：诊断失败原因（用例缺陷/疑似bug/环境）并修正用例">🔁 失败回灌（AI 诊断修正）</button>
+        <button class="btn btn-primary" onclick="iterateRounds()" title="自动循环：执行→失败回灌→再执行，直到全部通过/无改进/达到轮次上限">🔄 多轮迭代（自动闭环）</button>
+        <input id="maxRoundsInput" type="number" min="1" max="8" value="3" title="最大回灌修正次数" style="width:56px;padding:5px 6px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+        <span style="font-size:12px;color:#888;align-self:center">轮</span>
+        <span style="font-size:12px;color:#888;align-self:center">* 需要被测服务地址（步骤1填过 base_url 则自动复用）</span>
+      </div>
+      <div style="font-size:12px;color:#888;margin:6px 0 4px">测试凭证（可选，填一次即可——账号密码记住到会话；用例里的 <code>Bearer &lt;valid_jwt&gt;</code> 占位符自动换真实 token。登录路径留空则从接口探测结果自动识别）</div>
+      <div class="btn-group">
+        <input id="loginPathInput" placeholder="登录路径（留空自动识别）" style="flex:2;min-width:180px;padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+        <input id="authUserInput" placeholder="账号（如 admin@example.com）" style="flex:1;min-width:140px;padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+        <input id="authPassInput" type="password" placeholder="密码" style="flex:1;min-width:100px;padding:5px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+      </div>
+      <div id="execResult"></div>
+      <div id="feedbackResult"></div>
+      <div id="iterateResult"></div>
+      <div style="margin-top:12px;border-top:1px dashed #ddd;padding-top:8px">
+        <div class="btn-group">
+          <b style="font-size:13px;align-self:center">🐞 缺陷登记</b>
+          <button class="btn btn-sm" onclick="loadBugs()" title="列出缺陷注册表中已确认的潜在缺陷（按功能点）">刷新列表</button>
+          <span style="font-size:12px;color:#888;align-self:center">potential_bug 用例登记的持久台账，可手动重放验证与解除</span>
+        </div>
+        <div id="bugList"></div>
+      </div>
+    </div>
+
+    <!-- 步骤4.5：覆盖检测（盲区） -->
+    <div class="card step">
+      <div class="step-title"><div class="step-num">4.5</div><span>覆盖检测（盲区）</span></div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="runCoverage()">🔍 检测选中功能点的覆盖盲区</button>
+        <span style="font-size:12px;color:#888;align-self:center">从已生成的纯函数用例自动提取 call_args，用 coverage 统计代码分支覆盖</span>
+      </div>
+      <div id="coverageResult"></div>
+    </div>
+
+    </div><!-- /modeFeature -->
+
+    <!-- 日志 -->
+    <div class="card step">
+      <div class="step-title"><div class="step-num">5</div><span>运行日志</span></div>
+      <div class="log" id="logBox"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let state = {
+  mode: 'feature',     // feature=功能测试(源码主线) | requirement=需求测试(PRD主线)
+  selectedDir: null,
+  featurePoints: [],
+  selectedFp: new Set(),
+  testCases: {},       // entry -> [case]
+  reviews: {},         // entry -> review
+  refineResults: {},   // entry -> {original, refined, removed, added} 评审对比
+  feedbackResults: null, // 失败回灌结果（/api/feedback 响应）
+  lastTestLevel: 'api',
+  lastCoverModule: '',
+  results: [],
+  prdFeatures: [],     // PRD 功能点列表
+  prdSelected: new Set(),  // PRD 选中功能点索引
+  prdCases: {}         // PRD 生成的用例
+};
+
+const $ = id => document.getElementById(id);
+
+function log(msg) {
+  const box = $('logBox');
+  box.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  box.scrollTop = box.scrollHeight;
+}
+
+async function api(url, body, method) {
+  let opt = {};
+  if (method === 'DELETE') opt = { method: 'DELETE' };
+  else if (body) opt = { method: method || 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) };
+  const r = await fetch(url, opt);
+  if (!r.ok) { const t = await r.text().catch(()=>''); throw new Error(t); }
+  return r.json();
+}
+
+/* ---------- 测试模式切换：功能测试 / 需求测试 ---------- */
+/* 功能测试 = AST 分析源码主线；需求测试 = PRD 需求文档主线（两者的被测对象来源不同） */
+function switchMode(mode) {
+  state.mode = mode;
+  const isFeature = mode === 'feature';
+  $('modeFeature').style.display = isFeature ? '' : 'none';
+  $('modeRequirement').style.display = isFeature ? 'none' : '';
+  $('dirSection').style.display = isFeature ? '' : 'none';
+  $('reqSection').style.display = isFeature ? 'none' : '';
+  $('btnModeFeature').className = isFeature ? 'btn btn-primary' : 'btn';
+  $('btnModeRequirement').className = isFeature ? 'btn' : 'btn btn-primary';
+  $('modeTip').textContent = isFeature
+    ? '功能测试：分析源码 → 生成用例 → 评审 → 执行'
+    : '需求测试：上传 PRD → 提取功能点 → 生成用例';
+  log(isFeature ? '已切换到功能测试模式（源码分析主线）' : '已切换到需求测试模式（PRD 主线）');
+}
+
+/* ---------- PRD 分析 ---------- */
+async function uploadPrd(input) {
+  const file = input.files[0];
+  if (!file) return;
+  $('prdFileName').textContent = file.name;
+  $('prdLoading').innerHTML = '<div class="loading">正在上传并预处理 PRD 文档...</div>';
+  $('prdResult').innerHTML = '';
+  state.prdFeatures = [];
+  state.prdSelected = new Set();
+  state.prdCases = {};
+  log(`上传 PRD 文档: ${file.name}`);
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/prd/upload', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '预处理失败');
+    state.prdFeatures = data.features || [];
+    state.prdSelected = new Set(state.prdFeatures.map((_, i) => i));
+    renderPrdResult(data);
+    log(`PRD 预处理完成：提取到 ${state.prdFeatures.length} 个功能点`);
+  } catch(e) {
+    $('prdLoading').innerHTML = '';
+    $('prdResult').innerHTML = `<div class="empty" style="color:#b91c1c">PRD 预处理失败: ${escapeHtml(e.message)}</div>`;
+    log('PRD 预处理失败: ' + e.message);
+  }
+}
+
+function renderPrdResult(data) {
+  $('prdLoading').innerHTML = '';
+  const box = $('prdResult');
+  const features = state.prdFeatures;
+  if (!features.length) { box.innerHTML = '<div class="empty">未提取到功能点（文档可能没有标题结构）</div>'; return; }
+  box.innerHTML = `
+    <div class="stats">
+      <div class="stat-box">功能点 <b>${features.length}</b></div>
+      <div class="stat-box">已选 <b id="prdSelectedCount">${state.prdSelected.size}</b></div>
+    </div>
+    <div style="margin-bottom:10px">
+      <button class="btn btn-primary btn-sm" id="btnPrdGenerate" onclick="generatePrdCases()">✨ 为选中功能点生成测试用例</button>
+      <label style="font-size:13px;color:#666;margin-left:10px">条数 <input type="number" id="prdCaseCount" value="5" min="1" max="20" style="width:60px"></label>
+      <select id="prdProviderSel" style="margin-left:8px"><option value="deepseek">DeepSeek</option><option value="qwen">通义千问</option></select>
+    </div>
+    <div id="prdFeatureList">
+      ${features.map((f, i) => `
+        <div class="fp-item ${state.prdSelected.has(i) ? 'selected' : ''}" id="prdf_${i}" onclick="togglePrdFeature(${i})">
+          <div class="fp-entry">📄 ${escapeHtml(f.title)} <span style="font-size:11px;color:#888">（${escapeHtml(f.section||'无模块')}）</span></div>
+          <div class="fp-meta">${escapeHtml((f.content||'').substring(0,120))}${(f.content||'').length>120?'...':''}</div>
+        </div>`).join('')}
+    </div>
+  `;
+}
+
+function togglePrdFeature(i) {
+  if (state.prdSelected.has(i)) state.prdSelected.delete(i);
+  else state.prdSelected.add(i);
+  const el = document.getElementById('prdf_' + i);
+  if (el) el.classList.toggle('selected');
+  const c = document.getElementById('prdSelectedCount');
+  if (c) c.textContent = state.prdSelected.size;
+}
+
+async function generatePrdCases() {
+  const selected = [...state.prdSelected].map(i => state.prdFeatures[i]);
+  if (!selected.length) { alert('请至少选择一个功能点'); return; }
+  $('prdLoading').innerHTML = '<div class="loading">正在为选中的功能点生成测试用例...</div>';
+  log(`为 ${selected.length} 个 PRD 功能点生成用例`);
+  try {
+    const data = await api('/api/prd/generate', {
+      features: selected,
+      provider: $('prdProviderSel').value,
+      case_count: parseInt($('prdCaseCount').value) || 5
+    });
+    state.prdCases = data.test_cases;
+    renderPrdCases();
+    const total = Object.values(state.prdCases).reduce((s, a) => s + a.length, 0);
+    log(`PRD 用例生成完成：${total} 条`);
+  } catch(e) {
+    $('prdLoading').innerHTML = '';
+    log('PRD 用例生成失败: ' + e.message);
+    alert('PRD 用例生成失败: ' + e.message);
+  }
+}
+
+function renderPrdCases() {
+  $('prdLoading').innerHTML = '';
+  const box = $('prdResult');
+  let html = '<div style="margin-top:10px;border-top:1px dashed #ddd;padding-top:10px"><b style="font-size:14px">生成结果</b></div>';
+  Object.entries(state.prdCases).forEach(([title, cases]) => {
+    html += `<div class="case-item"><b style="font-size:13px">📍 ${escapeHtml(title)}</b></div>`;
+    cases.forEach(c => {
+      const req = c.request ? JSON.stringify(c.request, null, 2) : '（无 request）';
+      html += `<div class="case-item">
+        <div class="case-desc">${escapeHtml(c.description||'')} ${c.expected_status?`<span style="color:#4361ee;font-size:11px">[预期 ${c.expected_status}]</span>`:''}</div>
+        <div class="case-req">${escapeHtml(req)}</div>
+        ${(c.test_steps||[]).length?`<div class="case-steps">${escapeHtml((c.test_steps||[]).join('\n'))}</div>`:''}
+      </div>`;
+    });
+  });
+  box.innerHTML = html;
+}
+
+/* ---------- 文件夹浏览 ---------- */
+let currentDirPath = null;   // 当前浏览目录
+let currentDirParent = null; // 上级目录
+
+async function loadDirs(path) {
+  const url = path ? `/api/dirs?path=${encodeURIComponent(path)}` : '/api/dirs';
+  try {
+    const data = await api(url);
+    currentDirPath = data.current;
+    currentDirParent = data.parent;
+    renderDirPath();
+    renderDirs(data.dirs, $('dirTree'));
+  } catch(e) { log('加载目录失败: ' + e.message); }
+}
+
+function renderDirPath() {
+  const box = $('dirPath');
+  if (!currentDirPath) { box.innerHTML = '<span class="empty">加载中...</span>'; return; }
+  // 面包屑：从 / 拆解路径，每段可点击跳转
+  const parts = currentDirPath.split('/').filter(Boolean);
+  let html = `<button class="btn btn-sm" onclick="loadDirs('/')" title="根目录">/</button>`;
+  let acc = '';
+  parts.forEach((p, i) => {
+    acc += '/' + p;
+    html += ` <span style="color:#999">›</span> <button class="btn btn-sm" onclick="loadDirs('${acc.replace(/'/g,"\\'")}')">${escapeHtml(p)}</button>`;
+  });
+  // 返回上级
+  if (currentDirParent) {
+    html = `<button class="btn btn-sm" onclick="loadDirs('${currentDirParent.replace(/'/g,"\\'")}')" title="返回上级">⬆ 上级</button> ` + html;
+  }
+  box.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">${html}</div>`;
+  box.title = currentDirPath;
+}
+
+function renderDirs(dirs, container) {
+  if (!dirs.length) { container.innerHTML = '<div class="empty">此目录下无子文件夹</div>'; return; }
+  container.innerHTML = '';
+  dirs.forEach(d => {
+    const div = document.createElement('div');
+    div.className = 'dir-item';
+    div.innerHTML = `<span class="icon">📁</span><span>${escapeHtml(d.name)}</span>`;
+    div.onclick = () => {
+      // 取消其他选中
+      container.querySelectorAll('.dir-item.selected').forEach(x => x.classList.remove('selected'));
+      div.classList.add('selected');
+      $('btnAnalyze').disabled = false;
+      state.selectedDir = d.path;
+    };
+    div.ondblclick = () => loadDirs(d.path);   // 双击进入目录
+    container.appendChild(div);
+  });
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ---------- 步骤1：分析 ---------- */
+async function analyzeSelected() {
+  if (!state.selectedDir) { alert('请先选择文件夹'); return; }
+  $('btnAnalyze').disabled = true;
+  $('analyzeResult').innerHTML = '<div class="loading">正在分析代码结构...</div>';
+  log('开始分析: ' + state.selectedDir);
+  try {
+    const data = await api('/api/analyze', { source_dir: state.selectedDir });
+    state.featurePoints = data.features;
+    state.selectedFp = new Set(data.features.map(f => f.entry));
+    $('fpCount').textContent = data.features.length;
+    $('fpSelected').textContent = data.features.length;
+    renderFeatures();
+    $('btnGenerate').disabled = false;
+    log(`分析完成：${data.features.length} 个功能点`);
+    // 顺序无关：若此前做过 OpenAPI 探测（还没选文件夹），自动关联
+    if (data.probed && data.probe_summary) {
+      const ps = data.probe_summary;
+      log(`✅ 已自动关联此前探测的接口（${data.probed}）：匹配 ${ps.matched_count}/${ps.feature_count} 个功能点，共 ${ps.endpoint_count} 个 endpoint`);
+    }
+  } catch(e) { log('分析失败: ' + e.message); $('analyzeResult').innerHTML = `<div class="empty">分析失败: ${escapeHtml(e.message)}</div>`; }
+  finally { $('btnAnalyze').disabled = false; }
+}
+
+function renderFeatures() {
+  const box = $('analyzeResult');
+  if (!state.featurePoints.length) { box.innerHTML = '<div class="empty">未识别到功能点</div>'; updateFpSelectionUI(); return; }
+  box.innerHTML = '';
+  state.featurePoints.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'fp-item' + (state.selectedFp.has(f.entry) ? ' selected' : '');
+    div.dataset.entry = f.entry;
+    const iface = f.interface || {};
+    let ifaceStr = iface.url ? `${(iface.methods||[]).join('/')} ${iface.url}` : '无HTTP接口';
+    if (iface.url) {
+      if (iface.operation_id) ifaceStr += ` [${iface.operation_id}]`;
+      if (f.interface_source === 'openapi') ifaceStr += ' ·OpenAPI';
+      if (f.interface_ambiguous) ifaceStr += ' ⚠️多接口需确认';
+    }
+    div.innerHTML = `<div class="fp-entry">${escapeHtml(f.entry)}</div>
+      <div class="fp-meta">${escapeHtml(ifaceStr)} · ${f.control_sites ? f.control_sites.length : 0} 控制流 · ${f.call_edges ? f.call_edges.length : 0} 本地调用</div>`;
+    div.onclick = () => {
+      if (state.selectedFp.has(f.entry)) { state.selectedFp.delete(f.entry); div.classList.remove('selected'); }
+      else { state.selectedFp.add(f.entry); div.classList.add('selected'); }
+      updateFpSelectionUI();
+    };
+    box.appendChild(div);
+  });
+  updateFpSelectionUI();
+}
+
+/* 同步功能点选中状态的 UI（计数 / 按钮可用性 / 提示） */
+function updateFpSelectionUI() {
+  const total = state.featurePoints.length;
+  const sel = state.selectedFp.size;
+  $('fpSelected').textContent = sel;
+  $('btnGenerate').disabled = sel === 0;
+  $('fpSelTip').textContent = total ? `已选 ${sel} / 共 ${total}` : '未分析';
+  // 按 selectedFp 回写每个卡片的选中样式（全选/反选后需要）
+  document.querySelectorAll('#analyzeResult .fp-item').forEach(d => {
+    d.classList.toggle('selected', state.selectedFp.has(d.dataset.entry));
+  });
+}
+
+/* 全选：选中全部功能点 */
+function selectAllFp() {
+  if (!state.featurePoints.length) { alert('请先分析代码'); return; }
+  state.selectedFp = new Set(state.featurePoints.map(f => f.entry));
+  updateFpSelectionUI();
+  log(`已全选 ${state.selectedFp.size} 个功能点`);
+}
+
+/* 反选：已选变未选、未选变已选 */
+function invertFp() {
+  if (!state.featurePoints.length) { alert('请先分析代码'); return; }
+  const inverted = new Set();
+  state.featurePoints.forEach(f => {
+    if (!state.selectedFp.has(f.entry)) inverted.add(f.entry);
+  });
+  state.selectedFp = inverted;
+  updateFpSelectionUI();
+  log(`已反选，当前选中 ${state.selectedFp.size} 个功能点`);
+}
+
+/* 清空：取消全部选择 */
+function clearFp() {
+  state.selectedFp = new Set();
+  updateFpSelectionUI();
+  log('已清空功能点选择');
+}
+
+/* ---------- OpenAPI 运行时接口探测 ----------
+ * 两层模型：功能点（静态分析，代码结构）+ endpoint（OpenAPI，HTTP 契约）。
+ * 探测本身只需 base_url（与源码无关）；选了源码目录才顺带映射到功能点。
+ * 顺序无关：先探测后分析、先分析后探测皆可（服务端缓存探测结果自动补映射）。 */
+async function probeOpenapi() {
+  const base = $('baseUrlInput').value.trim();
+  if (!base) { alert('请填写被测服务根地址（如 http://localhost:8100）'); return; }
+  const body = { base_url: base };
+  const hasDir = !!state.selectedDir;
+  if (hasDir) body.source_dir = state.selectedDir;
+  if (state.selectedFp.size) body.entries = [...state.selectedFp];
+  log(`探测 OpenAPI 接口: ${base}${hasDir ? '（并映射到功能点）' : '（未选源码目录，仅列出接口清单）'}...`);
+  try {
+    const data = await api('/api/probe', body);
+    if (data.features) {
+      // 有源码：映射到功能点
+      state.featurePoints = data.features;
+      const alive = new Set(state.featurePoints.map(f => f.entry));
+      state.selectedFp = new Set([...state.selectedFp].filter(e => alive.has(e)));
+      renderFeatures();
+      const s = data.summary || {};
+      log(`探测完成：spec=${data.spec_url}；${s.endpoint_count} 个 endpoint，`
+          + `匹配 ${s.matched_count}/${s.feature_count} 个功能点`
+          + ((s.unreferenced_endpoints||[]).length ? `；${s.unreferenced_endpoints.length} 个接口未关联到功能点` : ''));
+      (s.unreferenced_endpoints||[]).slice(0,5).forEach(ep =>
+        log(`  🔗 未关联: ${ep.methods.join('/')} ${ep.url} [${ep.operation_id||'-'}]`));
+      if ((s.ambiguous_features||[]).length) {
+        log(`⚠️ 以下功能点匹配到多个接口（已全部列出），生成前请确认：${s.ambiguous_features.join('、')}`);
+      }
+    } else {
+      // 无源码：仅展示接口清单（之后分析代码会自动补映射）
+      $('analyzeResult').innerHTML =
+        `<div class="empty">已探测到 <b>${data.endpoint_count}</b> 个接口（未关联源码功能点）。<br>选择文件夹并分析后再次探测，或直接分析（会自动关联）。</div>`;
+      log(`探测完成：${data.endpoint_count} 个 endpoint @ ${data.base_url}（未选源码目录，未做功能点映射）`);
+      (data.endpoints||[]).slice(0,10).forEach(ep =>
+        log(`  🔗 ${ep.methods.join('/')} ${ep.url} [${ep.operation_id||'-'}]`));
+    }
+  } catch(e) { log('探测失败: ' + e.message); }
+}
+
+/* ---------- 步骤2：生成 ---------- */
+function onTestLevelChange() {
+  const lv = $('testLevelSel').value;
+  $('funcModuleRow').style.display = lv === 'func' ? 'block' : 'none';
+}
+
+async function generateCases() {
+  const entries = [...state.selectedFp];
+  if (!entries.length) { alert('请先选择功能点'); return; }
+  const test_level = $('testLevelSel').value;
+  const cover_module = $('funcModuleInput').value.trim();
+  if (test_level === 'func' && !cover_module) { alert('纯函数模式请先填写被测模块路径'); return; }
+  $('btnGenerate').disabled = true;
+  log(`开始生成用例（${entries.length} 个功能点，模式=${test_level}）...`);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    $('caseList').insertAdjacentHTML('beforeend', `<div class="loading">正在为 ${escapeHtml(entry)} 生成用例...</div>`);
+  }
+  try {
+    const data = await api('/api/generate', {
+      source_dir: state.selectedDir,
+      entries: entries,
+      provider: $('providerSel').value,
+      case_count: parseInt($('caseCountInput').value) || 5,
+      max_depth: parseInt($('depthInput').value) || 1,
+      test_level: test_level,
+      cover_module: cover_module
+    });
+    state.testCases = data.test_cases;
+    state.lastTestLevel = test_level;
+    state.lastCoverModule = cover_module;
+    renderCases();
+    $('btnReview').disabled = false;
+    const total = Object.values(state.testCases).reduce((s, a) => s + a.length, 0);
+    $('caseCount').textContent = total;
+    log(`用例生成完成，共 ${total} 条`);
+    // 生成预警（如 api 模式遇非 HTTP 入口）
+    if (data.warnings) {
+      Object.entries(data.warnings).forEach(([k, v]) => log(`⚠️ ${k}：${v}`));
+    }
+  } catch(e) {
+    log('生成失败: ' + e.message);
+    // 把后端错误详情展示到用例区，避免只显示"暂无用例"掩盖真实错误
+    $('caseList').innerHTML = `<div class="empty" style="color:#b91c1c">⚠️ 生成失败：${escapeHtml(e.message)}</div>`;
+  }
+  finally { $('btnGenerate').disabled = state.selectedFp.size === 0; renderCases(); }
+}
+
+function renderCases() {
+  const box = $('caseList');
+  box.innerHTML = '';
+  const entries = Object.keys(state.testCases);
+  if (!entries.length) { box.innerHTML = '<div class="empty">暂无用例，点击"生成选中功能点的用例"</div>'; return; }
+  entries.forEach(entry => {
+    box.insertAdjacentHTML('beforeend', `<div class="case-item"><b style="font-size:13px">📍 ${escapeHtml(entry)}</b></div>`);
+    state.testCases[entry].forEach((c, ci) => {
+      const steps = (c.test_steps||[]).map(s=>s).join('\n');
+      // func 用例展示 call_args/call_kwargs；api 用例展示 request
+      let execInfo = '';
+      // 用生成模式判断形态：func 显示调用参数，api 显示 request。
+      // 不能靠 call_args !== undefined 判断，因为 to_dict() 总会输出 call_args: null，
+      // 会导致 api 用例被误判为纯函数用例显示"调用参数: null"。
+      const isFunc = state.lastTestLevel === 'func' || Array.isArray(c.call_args);
+      if (isFunc) {
+        execInfo = '调用参数: ' + JSON.stringify(c.call_args || []) + (c.call_kwargs && Object.keys(c.call_kwargs).length ? ' kwargs=' + JSON.stringify(c.call_kwargs) : '');
+      } else {
+        execInfo = c.request ? JSON.stringify(c.request, null, 2) : '（无 request）';
+      }
+      box.insertAdjacentHTML('beforeend', `
+        <div class="case-item">
+          <div class="case-desc"><b style="color:#166534">${ci+1}.</b> ${escapeHtml(c.description||'')}</div>
+          <div class="case-req">${escapeHtml(execInfo)}</div>
+          ${steps ? `<div class="case-steps">${escapeHtml(steps)}</div>` : ''}
+        </div>`);
+    });
+  });
+}
+
+/* ---------- 步骤3：评审 ---------- */
+async function reviewCases() {
+  $('btnReview').disabled = true;
+  $('reviewResult').innerHTML = '<div class="loading">AI 正在评审所有用例...</div>';
+  log('开始 AI 评审...');
+  try {
+    const data = await api('/api/review', {
+      source_dir: state.selectedDir,
+      provider: $('providerSel').value
+    });
+    state.reviews = data.reviews;
+    renderReviews();
+    log('评审完成');
+  } catch(e) { log('评审失败: ' + e.message); $('reviewResult').innerHTML = `<div class="empty">评审失败: ${escapeHtml(e.message)}</div>`; }
+  finally { $('btnReview').disabled = false; }
+}
+function renderReviews() {
+  const box = $('reviewResult');
+  box.innerHTML = '';
+  Object.entries(state.reviews).forEach(([entry, r]) => {
+    box.insertAdjacentHTML('beforeend', `
+      <div class="review-box" id="review_${cssId(entry)}">
+        <div>📋 ${escapeHtml(entry)} · 评分 <span class="score">${r.score}/10</span> · 建议: <b>${escapeHtml(r.recommendation)}</b></div>
+        <div style="margin-top:6px">📌 评价：${escapeHtml(r.comments||'')}</div>
+        <ul><li style="list-style:none;color:#166534"><b>优点:</b> ${(r.strengths||[]).map(escapeHtml).join('; ')}</li></ul>
+        <ul><li style="list-style:none;color:#b91c1c"><b>缺点:</b> ${(r.weaknesses||[]).map(escapeHtml).join('; ')}</li></ul>
+        <ul><li style="list-style:none;color:#b45309"><b>缺失场景:</b> ${(r.missing_scenarios||[]).map(escapeHtml).join('; ')}</li></ul>
+        <div class="btn-group" style="margin-top:10px">
+          <button class="btn btn-primary btn-sm" onclick="regenerateCase('${entry.replace(/'/g,"\\'")}')">🔄 根据评审意见重新生成用例</button>
+        </div>
+        <div id="diff_${cssId(entry)}"></div>
+      </div>`);
+  });
+}
+
+function cssId(s){ return s.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+/* 根据评审意见重新生成用例（在评审区做前后对比，不影响上一步生成结果） */
+async function regenerateCase(entry) {
+  const review = state.reviews[entry];
+  if (!review) { alert('没有该功能点的评审结果'); return; }
+  const diffBox = document.getElementById('diff_' + cssId(entry));
+  if (diffBox) diffBox.innerHTML = '<div class="loading">正在根据评审意见重新生成用例...</div>';
+  log(`根据评审意见重新生成用例: ${entry}`);
+  try {
+    const data = await api('/api/regenerate', {
+      source_dir: state.selectedDir,
+      entry: entry,
+      review: review,
+      provider: $('providerSel').value,
+      case_count: parseInt($('caseCountInput').value) || 10
+    });
+    // 存对比结果（供评审区前后对比展示）
+    state.refineResults[entry] = {
+      original: data.original_cases || [],
+      refined: data.refined_cases || [],
+      removed: data.removed || [],
+      added: data.added || []
+    };
+    // 新版用例提升为当前版本：后续"重新评审 / AI 执行"都使用它
+    // （修复：之前不写回 testCases，导致重新生成后评审/执行仍用第一次生成的用例）
+    state.testCases[entry] = data.refined_cases || [];
+    renderCases();
+    renderRefineDiff(entry);
+    log(`重新生成完成：${entry} 新增 ${data.added_count} / 删除 ${data.removed_count} / 保留 ${(data.refined_cases||[]).length - (data.added_count||0)}；已替换为当前版本，后续评审/执行将使用新用例`);
+    if (data.missing_count !== undefined) {
+      log(`📊 评审发现 ${data.missing_count} 个缺失场景，本轮目标条数动态扩容为 ${data.effective_case_count} 条（上限 15）`);
+    }
+  } catch(e) {
+    if (diffBox) diffBox.innerHTML = `<div class="empty" style="color:#b91c1c">重新生成失败: ${escapeHtml(e.message)}</div>`;
+    log('重新生成失败: ' + e.message);
+  }
+}
+
+/* 渲染评审前后对比：左=上次结果(红标删除)，右=这次结果(绿标新增) */
+function renderRefineDiff(entry) {
+  const diffBox = document.getElementById('diff_' + cssId(entry));
+  if (!diffBox) return;
+  const r = state.refineResults[entry];
+  if (!r) return;
+
+  // 计算每条是新增/删除/保留
+  const origDescs = r.original.map(c => c.description);
+  const newDescs = r.refined.map(c => c.description);
+
+  const renderCase = (c, isRemoved, isAdded) => {
+    const req = c.request ? JSON.stringify(c.request, null, 2) : '（无 request）';
+    const steps = (c.test_steps||[]).join('\n');
+    const cls = isRemoved ? 'diff-removed' : (isAdded ? 'diff-added' : '');
+    const tag = isRemoved ? '🗑 已删除' : (isAdded ? '✨ 新增' : '= 保留');
+    return `<div class="case-item ${cls}">
+      <div class="case-desc">${tag} ${escapeHtml(c.description||'')}</div>
+      <div class="case-req">${escapeHtml(req)}</div>
+      ${steps ? `<div class="case-steps">${escapeHtml(steps)}</div>` : ''}
+    </div>`;
+  };
+
+  diffBox.innerHTML = `
+    <div class="diff-wrapper" style="margin-top:14px;border-top:1px dashed #ddd;padding-top:12px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px">🔄 评审前后对比 <span style="font-weight:400;color:#888;font-size:12px">（绿=新增 / 红=删除 / 灰=保留）</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:12px;color:#b91c1c;font-weight:600;margin-bottom:6px">◀ 上次结果（${r.original.length} 条）</div>
+          ${r.original.map(c => {
+            const removed = r.removed.some(x => x.description === c.description);
+            return renderCase(c, removed, false);
+          }).join('')}
+        </div>
+        <div>
+          <div style="font-size:12px;color:#166534;font-weight:600;margin-bottom:6px">这次结果（${r.refined.length} 条）▶</div>
+          ${r.refined.map(c => {
+            const added = r.added.some(x => x.description === c.description);
+            return renderCase(c, false, added);
+          }).join('')}
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ---------- 步骤4：执行（真实 HTTP，无 mock） ---------- */
+async function executeCases() {
+  const base = ($('baseUrlInput') ? $('baseUrlInput').value.trim() : '');
+  // 测试凭证（可选）：填了账号密码即启用；登录路径可留空（后端从探测结果自动识别）。
+  // 凭证由后端记住到会话，之后执行不用再填
+  const auth = {};
+  const lp = ($('loginPathInput') ? $('loginPathInput').value.trim() : '');
+  const au = ($('authUserInput') ? $('authUserInput').value.trim() : '');
+  const ap = ($('authPassInput') ? $('authPassInput').value : '');
+  if (au && ap) { if (lp) auth.login_path = lp; auth.username = au; auth.password = ap; }
+  log(`开始执行测试用例（真实 HTTP）...${base ? ' base=' + base : ''}${auth.username ? '（已配置测试凭证）' : ''}`);
+  try {
+    const data = await api('/api/execute', { source_dir: state.selectedDir, base_url: base, auth: auth });
+    state.results = data.results;
+    renderResults();
+    const s = data.stats || {};
+    log(`执行完成：${Object.entries(s).map(([k, v]) => `${k} ${v}`).join(' / ')}（共 ${data.results.length} 条）`);
+    // 有失败（FAIL/ERROR/SKIPPED）才开放"失败回灌"
+    const failed = (data.results || []).filter(r => ['FAIL','ERROR','SKIPPED'].includes(r.verdict)).length;
+    $('btnFeedback').disabled = failed === 0;
+    $('feedbackResult').innerHTML = '';
+    state.feedbackResults = null;
+    if (failed > 0) log(`有 ${failed} 条失败用例，可点击「失败回灌」让 AI 诊断并修正`);
+  } catch(e) { log('执行失败: ' + e.message); }
+}
+
+/* ---------- 失败回灌（Agent 闭环第②步：失败结构化 + 单 Agent 诊断修正） ---------- */
+async function runFeedback() {
+  const btn = $('btnFeedback');
+  const box = $('feedbackResult');
+  btn.disabled = true;
+  box.innerHTML = '<div class="loading">AI 正在诊断失败用例并修正...</div>';
+  log('失败回灌：把失败用例结构化后回灌 LLM 诊断...');
+  try {
+    const data = await api('/api/feedback', { source_dir: state.selectedDir, provider: $('providerSel').value });
+    state.feedbackResults = data;
+    renderFeedback();
+    const n = Object.keys(data.entries || {}).length;
+    log(`失败回灌完成：处理 ${n} 个功能点；修正用例已替换为当前版本，可重新执行验证`);
+    loadBugs();
+  } catch(e) {
+    box.innerHTML = `<div class="empty" style="color:#b91c1c">失败回灌出错: ${escapeHtml(e.message)}</div>`;
+    log('失败回灌出错: ' + e.message);
+  } finally { btn.disabled = false; }
+}
+
+function renderFeedback() {
+  const box = $('feedbackResult');
+  const data = state.feedbackResults;
+  if (!data) { box.innerHTML = ''; return; }
+  box.innerHTML = '';
+  const catColor = { case_defect: '#166534', potential_bug: '#b91c1c', env: '#b45309' };
+
+  // 全局聚合提示（失败的整体形态）
+  const hints = data.aggregate_hints || [];
+  if (hints.length) {
+    box.insertAdjacentHTML('beforeend', `<div class="result-item" style="border-color:#b45309">
+      <b style="color:#b45309">🧭 全局特征提示</b>
+      <ul style="margin:4px 0 0 18px">${hints.map(h => `<li>${escapeHtml(h)}</li>`).join('')}</ul></div>`);
+  }
+
+  const renderCaseMini = (c, tag, cls) => {
+    const req = c.request ? JSON.stringify(c.request, null, 2) : '（无 request）';
+    const steps = (c.test_steps||[]).join('\n');
+    return `<div class="case-item ${cls}">
+      <div class="case-desc">${tag} ${escapeHtml(c.description||'')}</div>
+      <div class="case-req">${escapeHtml(req)}</div>
+      ${steps ? `<div class="case-steps">${escapeHtml(steps)}</div>` : ''}
+    </div>`;
+  };
+
+  Object.entries(data.entries || {}).forEach(([entry, r]) => {
+    if (r.error) {
+      box.insertAdjacentHTML('beforeend', `<div class="result-item" style="margin-top:8px">
+        <b>📍 ${escapeHtml(entry)}</b><div style="color:#b91c1c">回灌失败：${escapeHtml(r.error)}</div></div>`);
+      return;
+    }
+    const diag = (r.diagnosis || []).map(d => {
+      const color = catColor[d.category] || '#333';
+      return `<li><b style="color:${color}">[${escapeHtml(d.category_label || d.category)}]</b>
+        ${escapeHtml(d.description||'')} — ${escapeHtml(d.cause||'')}
+        <span style="color:#888">（${escapeHtml(d.action||'')}）</span></li>`;
+    }).join('');
+    const stats = r.failure_stats || {};
+    const orig = r.original_cases || [], refined = r.refined_cases || [];
+    const removedSet = (r.removed||[]).map(c => c.description);
+    const addedSet = (r.added||[]).map(c => c.description);
+    box.insertAdjacentHTML('beforeend', `
+      <div class="result-item" style="margin-top:8px">
+        <b>📍 ${escapeHtml(entry)}</b>
+        <span style="font-size:12px;color:#888">（失败 ${stats.failed||0} 条 → 修正后 ${refined.length} 条；
+          新增 ${(r.added_count||0)} / 删除 ${(r.removed_count||0)}）</span>
+        ${diag ? `<div style="margin-top:6px"><b>🔍 诊断</b><ul style="margin:4px 0 0 18px;font-size:12px">${diag}</ul></div>` : ''}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+          <div>
+            <div style="font-size:12px;color:#b91c1c;font-weight:600;margin-bottom:6px">◀ 修正前（${orig.length} 条）</div>
+            ${orig.map(c => renderCaseMini(c, removedSet.includes(c.description) ? '🗑' : '=', removedSet.includes(c.description) ? 'diff-removed' : '')).join('')}
+          </div>
+          <div>
+            <div style="font-size:12px;color:#166534;font-weight:600;margin-bottom:6px">修正后（${refined.length} 条）▶</div>
+            ${refined.map(c => renderCaseMini(c, addedSet.includes(c.description) ? '✨' : '=', addedSet.includes(c.description) ? 'diff-added' : '')).join('')}
+          </div>
+        </div>
+      </div>`);
+  });
+}
+/* ---------- 覆盖检测（盲区） ---------- */
+async function runCoverage() {
+  const box = $('coverageResult');
+  // 找到有 call_args 的功能点（纯函数用例），作为覆盖检测对象
+  // 注意：api 用例的 call_args 是 null，必须用 Array.isArray 判断，否则 api 用例被误判
+  const funcEntries = Object.keys(state.testCases).filter(e =>
+    (state.testCases[e]||[]).some(c => Array.isArray(c.call_args)));
+  if (!funcEntries.length) {
+    box.innerHTML = '<div class="empty" style="color:#b45309">没有纯函数用例（带 call_args）。请先用"纯函数用例"模式生成，或检查用例是否包含调用参数。</div>';
+    return;
+  }
+  const cover_module = state.lastCoverModule;
+  if (!cover_module) {
+    box.innerHTML = '<div class="empty" style="color:#b45309">缺少被测模块路径（请先以纯函数模式生成用例时填写）</div>';
+    return;
+  }
+  box.innerHTML = '<div class="loading">正在用 coverage 检测覆盖盲区...</div>';
+  log(`覆盖检测：${funcEntries.length} 个功能点 @ ${cover_module}`);
+  const sections = [];
+  let hasError = false;
+  for (const entry of funcEntries) {
+    const cases = state.testCases[entry].filter(c => Array.isArray(c.call_args));
+    const calls = cases.map(c => ({ args: c.call_args, kwargs: c.call_kwargs || {} }));
+    try {
+      const data = await api('/api/coverage', {
+        source_dir: state.selectedDir,
+        cover_module: cover_module,
+        entry: entry,
+        calls: calls,
+        provider: $('providerSel').value
+      });
+      sections.push({ entry, cov: data.coverage, report: data.report_text });
+    } catch(e) {
+      hasError = true;
+      sections.push({ entry, error: e.message });
+    }
+  }
+  // 渲染结果
+  box.innerHTML = '';
+  sections.forEach(s => {
+    const header = `<div class="case-item" style="margin-top:8px"><b>🎯 ${escapeHtml(s.entry)}</b></div>`;
+    if (s.error) {
+      box.insertAdjacentHTML('beforeend', header + `<div class="empty" style="color:#b91c1c">覆盖检测失败：${escapeHtml(s.error)}</div>`);
+      return;
+    }
+    const c = s.cov;
+    const pct = Math.round((c.branch_coverage||0)*100);
+    const color = pct >= 80 ? '#166534' : (pct >= 50 ? '#b45309' : '#b91c1c');
+    const uncovered = (c.uncovered_branches||[]).map(b =>
+      `  <li>${escapeHtml(b.symbol)} L${b.line} ${escapeHtml(b.kind)} [${escapeHtml(b.path)}] (${(b.semantics||['unknown']).join(',')})${b.cond ? ' '+escapeHtml(b.cond) : ''}</li>`).join('');
+    const stmtPct = Math.round((c.statement_coverage||0)*100);
+    const warnings = (c.warnings||[]).map(w => `<li style="color:#b45309">⚠️ ${escapeHtml(w)}</li>`).join('');
+    box.insertAdjacentHTML('beforeend', header + `
+      <div class="result-item">
+        <div>分支覆盖率: <b style="color:${color}">${pct}%</b>（${c.covered_branches}/${c.total_branches} 分支）
+            · 语句覆盖: <b>${stmtPct}%</b>（${c.statement_covered}/${c.statement_total}）</div>
+        ${uncovered ? `<div style="margin-top:6px"><b style="color:#b91c1c">盲区分支：</b><ul style="margin:4px 0 0 18px">${uncovered}</ul></div>`
+                     : `<div style="color:#166534;margin-top:6px">✅ 无盲区分支</div>`}
+        ${warnings ? `<ul style="margin:6px 0 0 18px">${warnings}</ul>` : ''}
+      </div>`);
+  });
+  if (hasError) log('部分功能点覆盖检测失败，见下方结果');
+  else log(`覆盖检测完成：${funcEntries.length} 个功能点`);
+}
+
+function renderResults() {
+  const box = $('execResult');
+  box.innerHTML = '';
+  if (!state.results.length) { box.innerHTML = '<div class="empty">暂无执行结果</div>'; return; }
+  const marks = { PASS: ['✅', '#166534'], FAIL: ['❌', '#b91c1c'], WARN: ['⚠️', '#b45309'],
+                  ERROR: ['💥', '#b91c1c'], SKIPPED: ['⏭️', '#888'] };
+  const catColors = { case_defect: '#b45309', potential_bug: '#b91c1c', env: '#6b7280' };
+  state.results.forEach(r => {
+    const cls = r.status === 200 ? 'status-200' : (r.status >= 500 ? 'status-5xx' : (r.status >= 400 ? 'status-4xx' : ''));
+    const [mark, color] = marks[r.verdict] || ['•', '#333'];
+    box.insertAdjacentHTML('beforeend', `
+      <div class="result-item">
+        <span class="status ${cls}">[${r.status}]</span>
+        <b style="color:${color}">${mark} ${escapeHtml(r.verdict || '')}</b>
+        ${r.category_label ? `<span style="font-size:11px;font-weight:600;color:${catColors[r.category]||'#333'};border:1px solid ${catColors[r.category]||'#ccc'};border-radius:10px;padding:1px 8px;margin-left:6px">${escapeHtml(r.category_label)}</span>` : ''}
+        <span>${escapeHtml(r.description||'')}</span>
+        ${r.category_hint ? `<div style="font-size:12px;color:${catColors[r.category]||'#555'}">🏷 ${escapeHtml(r.category_hint)}</div>` : ''}
+        ${r.reason ? `<div style="font-size:12px;color:#555">${escapeHtml(r.reason)}</div>` : ''}
+        ${r.error ? `<div style="color:#b91c1c">${escapeHtml(r.error)}</div>` : ''}
+        ${r.request ? `<pre>请求: ${escapeHtml(JSON.stringify(r.request))}</pre>` : ''}
+        ${r.response_snippet ? `<pre>响应: ${escapeHtml(r.response_snippet)}</pre>` : ''}
+      </div>`);
+  });
+}
+
+/* ---------- 多轮迭代（Agent 闭环第③步前置：执行→回灌→再执行自动循环） ---------- */
+async function iterateRounds() {
+  const base = ($('baseUrlInput') ? $('baseUrlInput').value.trim() : '');
+  const auth = {};
+  const lp = ($('loginPathInput') ? $('loginPathInput').value.trim() : '');
+  const au = ($('authUserInput') ? $('authUserInput').value.trim() : '');
+  const ap = ($('authPassInput') ? $('authPassInput').value : '');
+  if (au && ap) { if (lp) auth.login_path = lp; auth.username = au; auth.password = ap; }
+  const maxRounds = parseInt($('maxRoundsInput').value) || 3;
+  const box = $('iterateResult');
+  box.innerHTML = '<div class="loading">多轮迭代进行中：执行 → 失败回灌 → 再执行...</div>';
+  log(`多轮迭代开始（最多 ${maxRounds} 轮回灌修正）...`);
+  try {
+    const data = await api('/api/iterate', {
+      source_dir: state.selectedDir, base_url: base, auth: auth,
+      provider: $('providerSel').value, max_rounds: maxRounds
+    });
+    // 每轮过程写日志
+    (data.rounds || []).forEach(r => {
+      const s = r.stats || {};
+      log(`第${r.round}轮执行：${Object.entries(s).map(([k, v]) => `${k} ${v}`).join(' / ')}（失败 ${r.failed}/${r.total}）`);
+      const fb = r.feedback_summary;
+      if (fb) {
+        const n = Object.keys(fb.entries || {}).length;
+        const diagN = Object.values(fb.entries || {}).reduce((a, e) => a + ((e.diagnosis||[]).length), 0);
+        log(`  └ 回灌修正 ${n} 个功能点，产出 ${diagN} 条诊断`);
+      }
+    });
+    log(`迭代结束：${data.stopped_reason}`);
+    // 最后一轮执行结果提升为主结果展示
+    state.results = data.final_results || [];
+    renderResults();
+    state.feedbackResults = null; $('feedbackResult').innerHTML = '';
+    renderIterate(data);
+    loadBugs();
+  } catch(e) {
+    box.innerHTML = `<div class="empty" style="color:#b91c1c">多轮迭代出错: ${escapeHtml(e.message)}</div>`;
+    log('多轮迭代出错: ' + e.message);
+  }
+}
+
+function renderIterate(data) {
+  const box = $('iterateResult');
+  const ok = data.converged;
+  const color = ok ? '#166534' : '#b45309';
+  const catColor = { case_defect: '#b45309', potential_bug: '#b91c1c', env: '#6b7280' };
+  const roundHtml = (data.rounds || []).map(r => {
+    const s = r.stats || {};
+    const statLine = ['PASS','FAIL','ERROR','SKIPPED','WARN'].filter(k => s[k]).map(k => `${k} ${s[k]}`).join(' / ');
+    const fb = r.feedback_summary;
+    let fbHtml = '';
+    if (fb) {
+      const diag = Object.entries(fb.entries || {}).map(([entry, e]) => {
+        if (e.error) return `<li style="color:#b91c1c">📍 ${escapeHtml(entry)}：回灌失败 ${escapeHtml(e.error)}</li>`;
+        const items = (e.diagnosis || []).map(d =>
+          `<li style="margin-left:16px"><b style="color:${catColor[d.category]||'#333'}">[${escapeHtml(d.category_label||d.category)}]</b>
+           ${escapeHtml(d.description||'')} — ${escapeHtml(d.cause||'')}<span style="color:#888">（${escapeHtml(d.action||'')}）</span></li>`).join('');
+        return `<li>📍 ${escapeHtml(entry)}（新增 ${e.added_count||0} / 删除 ${e.removed_count||0}）<ul style="margin:2px 0 4px">${items}</ul></li>`;
+      }).join('');
+      const hints = (fb.aggregate_hints || []).map(h => `<li style="color:#b45309">🧭 ${escapeHtml(h)}</li>`).join('');
+      fbHtml = `<div style="margin-top:6px"><b>🔍 本轮回灌</b><ul style="margin:2px 0 0 16px;font-size:12px">${hints}${diag}</ul></div>`;
+    }
+    return `<div style="margin-top:8px;border-top:1px dashed #ddd;padding-top:6px">
+      <b>第 ${r.round} 轮</b>：<span>${statLine}</span>
+      <b style="color:${r.failed === 0 ? '#166534' : '#b91c1c'}">失败 ${r.failed}/${r.total}</b>${fbHtml}</div>`;
+  }).join('');
+  box.innerHTML = `<div class="result-item" style="border-color:${color}">
+    <b style="color:${color}">${ok ? '🎉 多轮迭代收敛' : '⏹ 迭代结束'}</b>
+    <span style="font-size:12px;color:#888">${escapeHtml(data.stopped_reason || '')}</span>
+    ${roundHtml}
+  </div>`;
+}
+
+/* ---------- 缺陷登记面板（bug 注册表：列出/重放/删除） ---------- */
+async function loadBugs() {
+  if (!state.selectedDir) { $('bugList').innerHTML = '<div class="empty">请先选择源码目录</div>'; return; }
+  const box = $('bugList');
+  try {
+    const data = await api('/api/bugs?source_dir=' + encodeURIComponent(state.selectedDir));
+    state.bugFindings = data.bugs || [];
+    if (!state.bugFindings.length) { box.innerHTML = '<div class="empty" style="color:#166534">✅ 暂无已登记的潜在缺陷</div>'; return; }
+    // 按功能点分组
+    const byEntry = {};
+    state.bugFindings.forEach(b => { (byEntry[b.entry] = byEntry[b.entry] || []).push(b); });
+    box.innerHTML = '';
+    Object.entries(byEntry).forEach(([entry, bugs]) => {
+      box.insertAdjacentHTML('beforeend', `<div class="case-item"><b style="font-size:13px">📍 ${escapeHtml(entry)}</b>（${bugs.length} 条）</div>`);
+      bugs.forEach(b => {
+        const ev = (b.evidence || {});
+        box.insertAdjacentHTML('beforeend', `
+          <div class="result-item" id="bug_${b.id}">
+            <div>🐛 <b>${escapeHtml(b.description||'')}</b></div>
+            <div style="font-size:12px;color:#555;margin-top:2px">
+              预期 ${b.expected_status ?? '无'} · 登记时实际 ${ev.actual_status ?? '?'} ·
+              证据: ${escapeHtml((ev.response_snippet||'').slice(0,80))} · 登记 ${escapeHtml(b.created_at||'')}
+            </div>
+            <div class="btn-group" style="margin-top:6px">
+              <button class="btn btn-primary btn-sm" onclick="replayBug(${b.id})">▶ 重放验证</button>
+              <button class="btn btn-sm" onclick="deleteBug(${b.id})" title="服务端已修复或确认误报时解除登记">🗑 解除登记</button>
+            </div>
+            <div id="bugReplay_${b.id}"></div>
+          </div>`);
+      });
+    });
+    log(`缺陷登记：${state.bugFindings.length} 条`);
+  } catch(e) { box.innerHTML = `<div class="empty" style="color:#b91c1c">加载失败: ${escapeHtml(e.message)}</div>`; }
+}
+
+async function replayBug(id) {
+  const base = ($('baseUrlInput') ? $('baseUrlInput').value.trim() : '');
+  const auth = {};
+  const lp = ($('loginPathInput') ? $('loginPathInput').value.trim() : '');
+  const au = ($('authUserInput') ? $('authUserInput').value.trim() : '');
+  const ap = ($('authPassInput') ? $('authPassInput').value : '');
+  if (au && ap) { if (lp) auth.login_path = lp; auth.username = au; auth.password = ap; }
+  const box = $('bugReplay_' + id);
+  box.innerHTML = '<div class="loading">重放复现请求...</div>';
+  try {
+    const data = await api('/api/bugs/' + id + '/replay', {
+      source_dir: state.selectedDir, base_url: base, auth: auth });
+    const r = data.replay || {};
+    const stillColor = data.still_reproduces === true ? '#b91c1c' : (data.still_reproduces === false ? '#166534' : '#b45309');
+    box.innerHTML = `<div style="font-size:12px;margin-top:4px">
+      <b style="color:${stillColor}">${escapeHtml(data.suggestion || '')}</b>
+      <span style="color:#888">（重放: ${escapeHtml(r.verdict||'')} ${r.status||''}）</span></div>`;
+    log(`缺陷 #${id} 重放：${data.suggestion || ''}`);
+  } catch(e) { box.innerHTML = `<div style="font-size:12px;color:#b91c1c">重放失败: ${escapeHtml(e.message)}</div>`; }
+}
+
+async function deleteBug(id) {
+  if (!confirm('解除该缺陷登记？（服务端已修复或确认误报时使用；解除后不再自动复活复现用例）')) return;
+  try {
+    await api('/api/bugs/' + id, null, 'DELETE');
+    log(`缺陷 #${id} 已解除登记`);
+    loadBugs();
+  } catch(e) { log('解除失败: ' + e.message); }
+}
+
+/* ---------- 重置 ---------- */
+function resetAll() {
+  state = { selectedDir: null, featurePoints: [], selectedFp: new Set(), testCases: {}, reviews: {}, refineResults: {}, feedbackResults: null, results: [], prdFeatures: [], prdSelected: new Set(), prdCases: {}, lastTestLevel: 'api', lastCoverModule: '' };
+  $('dirTree').innerHTML = ''; $('analyzeResult').innerHTML = '<div class="empty">选择左侧文件夹开始</div>';
+  $('caseList').innerHTML = ''; $('reviewResult').innerHTML = ''; $('execResult').innerHTML = ''; $('coverageResult').innerHTML = ''; $('feedbackResult').innerHTML = ''; $('iterateResult').innerHTML = '';
+  $('prdResult').innerHTML = ''; $('prdFileName').textContent = ''; $('prdLoading').innerHTML = '';
+  $('logBox').textContent = ''; $('fpCount').textContent='0'; $('fpSelected').textContent='0'; $('caseCount').textContent='0';
+  $('btnAnalyze').disabled = true; $('btnGenerate').disabled = true; $('btnReview').disabled = true;
+  $('funcModuleInput').value = ''; $('funcModuleRow').style.display = 'none'; $('testLevelSel').value = 'api';
+  $('baseUrlInput').value = '';
+  $('loginPathInput').value = ''; $('authUserInput').value = ''; $('authPassInput').value = '';
+  $('btnFeedback').disabled = true;
+  $('fpSelTip').textContent = '未分析';
+  loadDirs(); log('会话已重置');
+}
+
+/* 初始化 */
+loadDirs();
+onTestLevelChange();
+switchMode('feature');
+log('pythonTest 平台就绪：功能测试请选择源码目录，需求测试请上传 PRD 文档');
+</script>
+</body>
+</html>

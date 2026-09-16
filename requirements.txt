@@ -1,0 +1,7 @@
+# pythonTest 依赖（Phase 0-3 只用标准库；Phase 4 LLM / Web 服务需以下依赖）
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.0
+requests>=2.31
+python-multipart>=0.0.9       # FastAPI 文件上传
+python-docx>=1.1             # PRD .docx 解析

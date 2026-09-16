@@ -1,0 +1,24 @@
+# Python 运行时产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# API Key / 敏感配置（严禁入库）
+pyst/.config
+
+# 运行时数据（用例落库/日志/上传文件，含测试数据）
+*.db
+*.log
+logs/
+pyst/uploads/
+
+# 临时实验文件
+_cov_demo_target.py
+_cov_test.py
+
+# IDE
+.idea/
+.vscode/
+.coverage
