@@ -48,7 +48,10 @@ _FIX_SYSTEM = """你是被测项目的自动修复 Agent。已确认的服务端
 finish 前必须至少跑过一次 run_tests。"""
 
 # 原生 function calling 工具定义（OpenAI tools 协议）：description/parameters 即工具的
-# 协议级描述——服务端约束模型输出结构化 tool_calls，不再依赖 prompt 模仿 JSON 格式
+# 协议级描述——服务端约束模型输出结构化 tool_calls，不再依赖 prompt 模仿 JSON 格式。
+# 注意：这里的 name 是 LLM 看到的工具名；实际执行体在 run() 循环里按 name 派发——
+# read_source/edit → _tool_read_source/_tool_edit（无状态方法），
+# run_tests/finish → 循环内联（需要访问 finding/会话/循环状态，如 stop 控制与验收）。
 FIX_TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
         "name": "read_source",
