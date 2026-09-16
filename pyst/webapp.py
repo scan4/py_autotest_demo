@@ -28,6 +28,7 @@ import os
 import re
 import uuid
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -1239,6 +1240,74 @@ class BugReplayRequest(BaseModel):
     source_dir: str
     base_url: str = ""
     auth: dict = Field(default_factory=dict)
+
+
+# ---------------- AI 修复子 Agent（方案 A：pythonTest 内置，完全全自动） ----------------
+_fix_tasks: dict[str, dict] = {}
+
+# 默认重启命令模板：适配 full-stack-fastapi-template（uv + backend 子目录）
+_DEFAULT_SERVICE_CMD = ("cd {project}/backend && nohup uv run uvicorn app.main:app "
+                        "--host 0.0.0.0 --port {port} > /tmp/pyst-fix-svc.log 2>&1 &")
+
+
+class FixStartRequest(BaseModel):
+    """启动一次 AI 修复（后台执行，/api/fix/status 轮询）。"""
+    source_dir: str
+    finding_id: int
+    base_url: str = ""
+    auth: dict = Field(default_factory=dict)
+    service_cmd: str = ""       # 被测服务重启命令，{project}/{port} 占位；空 = 默认模板
+    provider: str = "deepseek"
+    max_turns: int = 10
+    confirm: bool = False       # 显式授权开关：AI 修复为高权限操作，必须确认
+
+
+@app.post("/api/fix/start")
+def fix_start(req: FixStartRequest):
+    if not req.source_dir:
+        raise HTTPException(status_code=400, detail="请提供 source_dir")
+    if not req.confirm:
+        raise HTTPException(status_code=400,
+                            detail="AI 修复为高权限操作（会修改被测项目代码并重启服务），需显式确认")
+    session = _get_or_create_session(req.source_dir)
+    base = (req.base_url or session.base_url).strip()
+    if not base:
+        raise HTTPException(status_code=400, detail="请提供被测服务地址 base_url")
+    store = _get_bug_store()
+    try:
+        finding = store.get_bug_finding(req.finding_id)
+    finally:
+        store.close()
+    if not finding:
+        raise HTTPException(status_code=404, detail=f"缺陷登记不存在: {req.finding_id}")
+    if finding.get("source_dir") != req.source_dir:
+        raise HTTPException(status_code=400, detail="缺陷登记与 source_dir 不匹配")
+    if not finding.get("request"):
+        raise HTTPException(status_code=400, detail="该登记缺少复现请求，无法修复")
+
+    port = (urllib.parse.urlparse(
+        base if "//" in base else "http://" + base).port) or 80
+    service_cmd = (req.service_cmd or _DEFAULT_SERVICE_CMD).format(
+        project=req.source_dir, port=port)
+    token = _resolve_token(session, base, req.auth)
+
+    task_id = uuid.uuid4().hex[:8]
+    from .eval.fixer import FixAgent
+    agent = FixAgent(task_id, session, req.source_dir, finding, base, token,
+                     service_cmd, req.provider, max_turns=min(req.max_turns, 20),
+                     log_fn=lambda m: _fix_tasks[task_id]["log"].append(m))
+    _fix_tasks[task_id] = agent.task
+    import threading
+    threading.Thread(target=agent.run, daemon=True).start()
+    return {"task_id": task_id, "status": "running"}
+
+
+@app.get("/api/fix/status/{task_id}")
+def fix_status(task_id: str):
+    task = _fix_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"修复任务不存在: {task_id}")
+    return task
 
 
 @app.post("/api/bugs/{finding_id}/replay")

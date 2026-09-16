@@ -1058,6 +1058,7 @@ async function loadBugs() {
             </div>
             <div class="btn-group" style="margin-top:6px">
               <button class="btn btn-primary btn-sm" onclick="replayBug(${b.id})">▶ 重放验证</button>
+              <button class="btn btn-danger btn-sm" onclick="startFix(${b.id})" title="AI 修复子 Agent 自动修改被测代码（git 分支隔离，失败自动回滚）">🤖 AI 修复</button>
               <button class="btn btn-sm" onclick="deleteBug(${b.id})" title="服务端已修复或确认误报时解除登记">🗑 解除登记</button>
             </div>
             <div id="bugReplay_${b.id}"></div>
@@ -1096,6 +1097,51 @@ async function deleteBug(id) {
     log(`缺陷 #${id} 已解除登记`);
     loadBugs();
   } catch(e) { log('解除失败: ' + e.message); }
+}
+
+/* ---------- AI 修复子 Agent（方案 A：内置，完全全自动） ---------- */
+async function startFix(findingId) {
+  if (!confirm('AI 修复将自动修改被测项目代码并重启被测服务：\n'
+    + '· 在 git 分支 ai-fix/bug-N 上修改（要求工作区干净）\n'
+    + '· 验收 = 缺陷行为消失 + 全量回归无新增失败\n'
+    + '· 失败自动回滚，成功输出 diff 供人工审阅\n\n确认启动？')) return;
+  const base = ($('baseUrlInput') ? $('baseUrlInput').value.trim() : '');
+  const auth = {};
+  const lp = ($('loginPathInput') ? $('loginPathInput').value.trim() : '');
+  const au = ($('authUserInput') ? $('authUserInput').value.trim() : '');
+  const ap = ($('authPassInput') ? $('authPassInput').value : '');
+  if (au && ap) { if (lp) auth.login_path = lp; auth.username = au; auth.password = ap; }
+  log(`AI 修复启动（缺陷 #${findingId}）...`);
+  try {
+    const data = await api('/api/fix/start', {
+      source_dir: state.selectedDir, finding_id: findingId, base_url: base,
+      auth: auth, provider: $('providerSel').value, max_turns: 10, confirm: true });
+    pollFix(data.task_id, findingId);
+  } catch(e) { log('AI 修复启动失败: ' + e.message); }
+}
+
+function pollFix(taskId, findingId) {
+  let shown = 0;
+  const timer = setInterval(async () => {
+    try {
+      const t = await api('/api/fix/status/' + taskId);
+      while (shown < t.log.length) { log('[fix] ' + t.log[shown]); shown++; }
+      if (t.status === 'done') {
+        clearInterval(timer);
+        const box = $('bugReplay_' + findingId);
+        if (t.success) {
+          box.innerHTML = `<div style="font-size:12px;color:#166534;margin-top:4px">🎉 ${escapeHtml(t.summary)}
+            <details style="margin-top:4px"><summary style="cursor:pointer">查看修复 diff</summary>
+            <pre style="max-height:200px;overflow:auto">${escapeHtml(t.patch||'')}</pre></details></div>`;
+          log(`AI 修复成功：${t.summary}`);
+        } else {
+          box.innerHTML = `<div style="font-size:12px;color:#b45309;margin-top:4px">⏹ 修复失败（已回滚）：${escapeHtml(t.summary||'')}</div>`;
+          log(`AI 修复失败：${t.summary}`);
+        }
+        loadBugs();
+      }
+    } catch(e) { clearInterval(timer); log('修复状态查询失败: ' + e.message); }
+  }, 3000);
 }
 
 /* ---------- 重置 ---------- */
