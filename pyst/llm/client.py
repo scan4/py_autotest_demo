@@ -25,11 +25,103 @@
 
 import os
 import re
+import socket
 import time as _time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 import requests
+
+# ---------------- 好 IP 钉住（CDN 黑洞 IP 规避） ----------------
+# 实测 DeepSeek CDN 的 DNS 动态轮询：不同时刻返回不同的边缘 IP 集合，
+# 部分集合全为黑洞（TCP 443 超时）→ LLM 调用偶发全部 ConnectTimeout。
+# 方案：探测可达 IP 后缓存，并在 socket.getaddrinfo 层把目标 host 的解析
+# 结果替换为可达 IP（TLS 证书/SNI 仍按域名校验，不受影响）。
+_DNS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_DNS_TTL = 600          # 好 IP 缓存 10 分钟
+_probe_lock: Any = None
+
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _probe_good_ips(host: str) -> list[str]:
+    """探测 host:443 的所有解析 IP，返回"真节点"列表（TLS 握手 + 证书校验通过）。
+
+    只测 TCP 会把运营商劫持节点误判为可达（TCP 通但返回 400/劫持页，实测踩坑）；
+    必须完成 TLS 握手且证书域名校验通过，才是真正可用的 API 节点。
+    """
+    import socket as _s
+    import ssl as _ssl
+    try:
+        ips = sorted({ai[4][0] for ai in _s.getaddrinfo(host, 443, _s.AF_INET)})
+    except Exception:
+        return []
+    ctx = _ssl.create_default_context()
+    scored: list[tuple[float, str]] = []
+    for ip in ips:
+        t0 = _time.time()
+        try:
+            raw = _s.create_connection((ip, 443), timeout=2)
+            tls = ctx.wrap_socket(raw, server_hostname=host)   # 证书校验失败即剔除
+            tls.close()
+            scored.append((t0 - _time.time(), ip))
+        except Exception:
+            continue
+    scored.sort()
+    return [ip for _, ip in scored]
+
+
+def _good_ips(host: str) -> list[str] | None:
+    """取 host 的可达 IP（带 TTL 缓存）；无可用结果返回 None（走原 DNS）。"""
+    global _probe_lock
+    entry = _DNS_CACHE.get(host)
+    if entry and entry[0] > _time.time():
+        return entry[1] or None
+    if _probe_lock is None:
+        import threading
+        _probe_lock = threading.Lock()
+    if _probe_lock.acquire(timeout=30):        # 并发请求只探测一次
+        try:
+            entry = _DNS_CACHE.get(host)
+            if not (entry and entry[0] > _time.time()):
+                good = _probe_good_ips(host)
+                _DNS_CACHE[host] = (_time.time() + _DNS_TTL, good)
+                return good or None
+        finally:
+            _probe_lock.release()
+    entry = _DNS_CACHE.get(host)
+    return (entry[1] or None) if entry else None
+
+
+def _patched_getaddrinfo(host: Any, *args: Any, **kwargs: Any):
+    """包装 socket.getaddrinfo：LLM API 域名命中缓存时钉住可达 IP，其余原样透传。"""
+    try:
+        if isinstance(host, str) and host in _DNS_CACHE:
+            ips = _DNS_CACHE[host][1]
+            if ips:
+                return _orig_getaddrinfo(ips[0], *args, **kwargs)
+    except Exception:
+        pass
+    return _orig_getaddrinfo(host, *args, **kwargs)
+
+
+def _install_dns_pin(host: str) -> None:
+    """安装 getaddrinfo 包装并预热 host 的可达 IP（幂等，只对 LLM API 域名生效）。"""
+    global _probe_lock
+    if _probe_lock is None:
+        import threading
+        _probe_lock = threading.Lock()
+    if _probe_lock.acquire(timeout=60):
+        try:
+            if host not in _DNS_CACHE:
+                good = _probe_good_ips(host)
+                _DNS_CACHE[host] = (_time.time() + _DNS_TTL, good)
+            if not getattr(socket, "_pyst_dns_pinned", False):
+                socket.getaddrinfo = _patched_getaddrinfo
+                socket._pyst_dns_pinned = True
+        finally:
+            _probe_lock.release()
 
 # Provider 默认配置：base_url / 默认模型 / 环境变量名
 _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
@@ -118,6 +210,15 @@ class LLMClient:
         # Session 复用连接：一旦某次调用落到"好 IP"，后续调用复用 TCP 连接，
         # 不再每次都重新赌 DNS 轮询（requests.post 模块级函数每次都新建连接）
         self._session = requests.Session()
+        # 好 IP 钉住：CDN DNS 轮询会偶发返回全黑洞集合（实测 ConnectTimeout×5），
+        # 探测可达 IP 并在 getaddrinfo 层钉住，后续连接稳定走可达 IP
+        try:
+            _install_dns_pin(self._url_host())
+        except Exception:
+            pass
+
+    def _url_host(self) -> str:
+        return urllib.parse.urlparse(self.base_url).hostname or self.base_url
 
     @staticmethod
     def _config_key(env_key: str) -> str | None:
