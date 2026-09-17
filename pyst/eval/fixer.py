@@ -228,10 +228,15 @@ class FixAgent:
             task["summary"] = f"被测项目目录 {self.source_dir} 不在 git 仓库中，无法安全修复"
             return
         self.project = project
-        orig_branch = None
-        branch = None
+        if not _git(project, "status", "--porcelain").strip() == "":
+            dirty = _git(project, "status", "--porcelain")
+            task["status"] = "failed"
+            task["summary"] = f"被测项目工作区不干净，拒绝自动修复（防止误伤未提交的更改）：\n{dirty[:300]}"
+            return
+        orig_branch = _git(project, "branch", "--show-current") or "HEAD"
+        branch = f"ai-fix/bug-{self.finding['id']}"
         try:
-            self._run(project)
+            self._run(project, orig_branch, branch)
         except Exception as e:
             # 异常路径兜底恢复（实测：网络断导致 LLM 抛异常时，工作区可能已切到
             # 修复分支甚至已有修改——必须恢复，否则"改坏无法复原"）
