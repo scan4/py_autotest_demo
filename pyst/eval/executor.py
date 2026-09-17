@@ -63,6 +63,10 @@ def _assert(case: dict[str, Any], resp: requests.Response, result: dict[str, Any
       2. 意图明确且实际 ∈ 可接受集 → PASS（预期码偏差标注为"预期码写错"）
       3. 意图明确且实际 ∉ 可接受集 → FAIL（意图不符）
       4. 探查/意图不明确 → 退回精确对比；无预期码 → 关键词兜底 / WARN
+
+    【遗留】安全加固（路径沙箱祖先判断/敏感拒绝清单）与意图断言均已落地，
+    对应回归测试见 tests/（68 用例）；断言可靠性第二阶段（OpenAPI 响应 schema
+    字段级断言）待 OpenAPI 探测扩展 responses 提取后实施。
     """
     from .assertions import assert_case
     exp_status = case.get("expected_status")
