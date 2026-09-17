@@ -1064,6 +1064,7 @@ async function loadBugs() {
             <div class="btn-group" style="margin-top:6px">
               <button class="btn btn-primary btn-sm" onclick="replayBug(${b.id})">▶ 重放验证</button>
               <button class="btn btn-danger btn-sm" onclick="startFix(${b.id})" title="AI 修复子 Agent 自动修改被测代码（git 分支隔离，失败自动回滚）">🤖 AI 修复</button>
+              <button class="btn btn-sm" onclick="applyBugFix(${b.id})" title="把 AI 修复分支 merge 进当前代码并重启服务（应用后请重放验证）">⬇ 应用修复分支</button>
               <button class="btn btn-sm" onclick="deleteBug(${b.id})" title="服务端已修复或确认误报时解除登记">🗑 解除登记</button>
             </div>
             <div id="bugReplay_${b.id}"></div>
@@ -1102,6 +1103,27 @@ async function deleteBug(id) {
     log(`缺陷 #${id} 已解除登记`);
     loadBugs();
   } catch(e) { log('解除失败: ' + e.message); }
+}
+
+async function applyBugFix(id) {
+  if (!confirm('应用 AI 修复分支（ai-fix/bug-' + id + '）？\n将 merge 进当前代码分支并重启被测服务，应用后请重放验证缺陷是否消失。')) return;
+  const base = ($('baseUrlInput') ? $('baseUrlInput').value.trim() : '');
+  const auth = {};
+  const lp = ($('loginPathInput') ? $('loginPathInput').value.trim() : '');
+  const au = ($('authUserInput') ? $('authUserInput').value.trim() : '');
+  const ap = ($('authPassInput') ? $('authPassInput').value : '');
+  if (au && ap) { if (lp) auth.login_path = lp; auth.username = au; auth.password = ap; }
+  const box = $('bugReplay_' + id);
+  if (box) box.innerHTML = '<div class="loading">正在应用修复分支（merge + 重启被测服务）...</div>';
+  try {
+    const data = await api('/api/bugs/' + id + '/apply', {
+      source_dir: state.selectedDir, base_url: base, auth: auth });
+    if (box) box.innerHTML = `<div style="font-size:12px;color:#166534;margin-top:4px">✅ ${escapeHtml(data.next||'修复分支已应用')}</div>`;
+    log(`缺陷 #${id} 修复分支已应用：${data.next || ''}`);
+  } catch(e) {
+    if (box) box.innerHTML = `<div style="font-size:12px;color:#b91c1c">应用失败: ${escapeHtml(e.message)}</div>`;
+    log('应用修复分支失败: ' + e.message);
+  }
 }
 
 /* ---------- AI 修复子 Agent（方案 A：内置，完全全自动） ---------- */

@@ -1260,10 +1260,11 @@ def delete_bug(finding_id: int):
 
 
 class BugReplayRequest(BaseModel):
-    """手动重放缺陷复现请求（验证缺陷是否仍存在）。"""
+    """手动重放缺陷复现请求（验证缺陷是否仍存在）/ 应用修复分支。"""
     source_dir: str
     base_url: str = ""
     auth: dict = Field(default_factory=dict)
+    service_cmd: str = ""   # 被测服务重启命令（应用修复分支后重启用），{project}/{port} 占位
 
 
 # ---------------- AI 修复子 Agent（方案 A：pythonTest 内置，完全全自动） ----------------
@@ -1353,6 +1354,7 @@ def replay_bug(finding_id: int, req: BugReplayRequest):
         raise HTTPException(status_code=400, detail="该登记缺少复现请求，无法重放")
     if not req.source_dir:
         raise HTTPException(status_code=400, detail="请提供 source_dir")
+    from .eval.fixer import _git, find_git_root
     session = _get_or_create_session(req.source_dir)
     base = (req.base_url or session.base_url).strip()
     if not base:
@@ -1369,16 +1371,76 @@ def replay_bug(finding_id: int, req: BugReplayRequest):
     now_status = result.get("status")
     still = None
     suggestion = ""
+    fix_branch = f"ai-fix/bug-{finding_id}"
     if orig_status and now_status:
         still = (now_status == orig_status)
         if still:
             suggestion = f"缺陷仍复现（实际 {now_status}，与登记时一致）——保留登记"
+            # AI 修复分支存在但未应用时，说明重放的是"未应用修复"的主工作区代码——
+            # 这是预期状态（修复待人工审阅 merge），提示用户操作路径
+            project = find_git_root(req.source_dir)
+            if project:
+                branches = _git(project, "branch", "--list", fix_branch, check=False)
+                if fix_branch in branches:
+                    suggestion += (f"（注意：AI 修复分支 {fix_branch} 已存在但尚未应用——"
+                                   "当前重放的是未应用修复的主工作区代码，可点「应用修复分支」后再验证）")
         else:
             suggestion = (f"服务端行为已变化（登记时 {orig_status} → 现在 {now_status}），"
                           "缺陷可能已被修复或环境不同——建议核对后解除登记")
     return {"finding_id": finding_id, "replay": result,
             "recorded_status": orig_status, "still_reproduces": still,
+            "fix_branch": fix_branch if _git(project, "branch", "--list", fix_branch, check=False) else "",
             "suggestion": suggestion}
+
+
+@app.post("/api/bugs/{finding_id}/apply")
+def apply_bug_fix(finding_id: int, req: BugReplayRequest):
+    """应用 AI 修复分支（merge ai-fix/bug-N 到当前分支）并重启被测服务。
+
+    这是"AI 修复成功 → 人工确认"之间的操作：先在前端审阅 diff，再应用，
+    应用后重放验证缺陷是否消失，确认无误后解除登记。merge 冲突时报 409 交人工处理。
+    """
+    if not req.source_dir:
+        raise HTTPException(status_code=400, detail="请提供 source_dir")
+    from .eval.fixer import _git, find_git_root, _restart_service
+    store = _get_bug_store()
+    try:
+        finding = store.get_bug_finding(finding_id)
+    finally:
+        store.close()
+    if not finding:
+        raise HTTPException(status_code=404, detail=f"缺陷登记不存在: {finding_id}")
+    project = find_git_root(req.source_dir)
+    if not project:
+        raise HTTPException(status_code=400, detail=f"{req.source_dir} 不在 git 仓库中")
+    branch = f"ai-fix/bug-{finding_id}"
+    branches = _git(project, "branch", "--list", branch, check=False)
+    if branch not in branches:
+        raise HTTPException(status_code=404,
+                            detail=f"修复分支 {branch} 不存在（可能已被应用/删除，或 AI 修复未成功）")
+    if _git(project, "status", "--porcelain").strip():
+        raise HTTPException(status_code=400,
+                            detail="被测项目工作区不干净，拒绝 merge（防止误伤未提交的更改）")
+    try:
+        merge_out = _git(project, "merge", "--no-ff", "-m",
+                         f"merge: 应用 AI 修复（bug #{finding_id}）", branch, check=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"merge 执行失败: {e}")
+    if "CONFLICT" in merge_out:
+        _git(project, "merge", "--abort", check=False)
+        raise HTTPException(status_code=409,
+                            detail=f"merge 存在冲突（已中止，工作区未变），请人工处理分支 {branch}")
+    # merge 成功：重启服务加载修复后代码，并清理已应用的修复分支
+    session = _get_or_create_session(req.source_dir)
+    base = (req.base_url or session.base_url).strip() or req.base_url
+    token = _resolve_token(session, base, req.auth)
+    port = urllib.parse.urlparse(base if "//" in base else "http://" + base).port or 80
+    service_cmd = (req.service_cmd or _DEFAULT_SERVICE_CMD).format(project=req.source_dir, port=port)
+    _restart_service(base, service_cmd, log=lambda m: None)
+    _git(project, "branch", "-d", branch, check=False)
+    return {"applied": True, "branch": branch,
+            "merge": merge_out[:300],
+            "next": "服务已重启（运行修复后代码）——请点「重放验证」确认缺陷行为已消失，再解除登记"}
 
 
 # ---------------- PRD 需求文档分析 ----------------
