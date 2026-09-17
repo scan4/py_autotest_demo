@@ -5,3 +5,6 @@ pydantic>=2.0
 requests>=2.31
 python-multipart>=0.0.9       # FastAPI 文件上传
 python-docx>=1.1             # PRD .docx 解析
+
+# 测试（开发依赖）
+pytest>=8.0
