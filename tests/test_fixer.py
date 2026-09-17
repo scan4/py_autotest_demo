@@ -116,10 +116,10 @@ def fix_env(tmp_path, monkeypatch):
     proj = _mk_project(tmp_path)
     import pyst.eval.fixer as fx
     monkeypatch.setattr(fx, "_restart_service", lambda *a, **k: None)
-    monkeypatch.setattr("pyst.eval.executor.execute_http_case",
+    monkeypatch.setattr("pyst.eval.fixer.execute_http_case",
                         lambda case, base, token="": {"verdict": "PASS", "status": 422})
-    monkeypatch.setattr("pyst.eval.executor.execute_suite",
-                        lambda cases, base, token="": ([], {"PASS": 1}))
+    monkeypatch.setattr("pyst.eval.fixer.execute_suite_with_resources",
+                        lambda cases, base, token="", log=None: ([], {"PASS": 1}))
     return proj, fx
 
 

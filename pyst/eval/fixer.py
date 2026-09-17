@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..llm.client import LLMClient
+from .executor import execute_http_case, execute_suite_with_resources
 
 _FIX_SYSTEM = """你是被测项目的自动修复 Agent。已确认的服务端缺陷证据和复现请求已给出。
 你的任务：阅读相关源码，修改业务代码使缺陷消失，且不破坏其他测试。
@@ -203,7 +204,6 @@ class FixAgent:
         return f"已应用修改：{file}"
 
     def _tool_run_tests(self) -> str:
-        from .executor import execute_http_case, execute_suite
         _restart_service(self.base, self.service_cmd, self.log)
         # 复现请求：缺陷行为是否消失（状态码不再等于登记时的实际行为）
         replay = execute_http_case(
@@ -218,7 +218,8 @@ class FixAgent:
         for entry, cs in self.session.test_cases.items():
             for c in cs:
                 cases.append({**c, "_entry": entry})
-        _, stats = execute_suite(cases, self.base, token=self.token)
+        _, stats = execute_suite_with_resources(cases, self.base, token=self.token,
+                                                log=self.log)
         return (f"复现请求结果: {replay.get('verdict')} 实际状态码 {replay.get('status')}"
                 f"（登记时缺陷行为: {recorded}；{'缺陷行为仍存在' if still else '行为已变化——若为拒绝类 4xx 说明修复可能有效'}）\n"
                 f"全量回归统计: {stats}\n"
@@ -245,7 +246,6 @@ class FixAgent:
     # ---------------- 主流程 ----------------
 
     def run(self) -> None:
-        from .executor import execute_http_case, execute_suite
         task = self.task
         project = find_git_root(self.source_dir)
         if not project:
@@ -282,7 +282,6 @@ class FixAgent:
 
     def _run(self, project: str, orig_branch: str, branch: str) -> None:
         task = self.task
-        from .executor import execute_http_case, execute_suite
 
         if not _git(project, "status", "--porcelain").strip() == "":
             dirty = _git(project, "status", "--porcelain")
@@ -296,7 +295,9 @@ class FixAgent:
         for entry, cs in self.session.test_cases.items():
             for c in cs:
                 baseline_cases.append({**c, "_entry": entry})
-        baseline_results, _ = execute_suite(baseline_cases, self.base, token=self.token)
+        baseline_results, _ = execute_suite_with_resources(baseline_cases, self.base,
+                                                           token=self.token,
+                                                           log=self.log)
         baseline = {(r.get("entry"), r.get("description")): (r.get("verdict"), r.get("status"))
                     for r in baseline_results}
         task["log"].append(f"修复前基线：{sum(1 for v in baseline.values() if v[0]=='PASS')} PASS")
@@ -361,9 +362,9 @@ class FixAgent:
                             self.base, token=self.token)
                         replay_status = replay.get("status")
                         still = (replay_status == recorded) if recorded else None
-                        run_results, stats = execute_suite(
+                        run_results, stats = execute_suite_with_resources(
                             [{**c, "_entry": e} for e, cs in self.session.test_cases.items()
-                             for c in cs], self.base, token=self.token)
+                             for c in cs], self.base, token=self.token, log=self.log)
                         self.last_results = run_results   # 验收对比用（新增 FAIL 检测）
                         ran_tests = True
                         ok, why = self._validate(baseline, replay_status)

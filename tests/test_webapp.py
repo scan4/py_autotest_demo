@@ -69,7 +69,7 @@ def test_iterate_no_improvement_stop(client, monkeypatch):
                             "request": {"method": "POST", "url": "/x"},
                             "expected_status": 400, "test_steps": ["1"],
                             "expected_results": ["1"]}]}
-    mp.setattr("pyst.eval.executor.execute_suite", lambda cases, base, token="": (
+    mp.setattr("pyst.eval.executor.execute_suite_with_resources", lambda cases, base, token="": (
         [{"entry": "e1", "description": "title 为纯空白字符创建物品", "verdict": "FAIL", "status": 200,
           "category": "potential_bug", "request": {"method": "POST", "url": "/x"}}],
         {"FAIL": 1}))

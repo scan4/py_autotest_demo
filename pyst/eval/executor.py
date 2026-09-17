@@ -15,8 +15,12 @@
 
 from __future__ import annotations
 
+import itertools
+import json
+import re
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -309,6 +313,7 @@ def execute_http_case(case: dict[str, Any], base: str = "", timeout: int = 30,
             "url": url,
             "request": req,
             "response_snippet": (resp.text or "")[:300],
+            "response_body": (resp.text or "")[:2000],   # 资源工厂提取 id 用（完整一点）
         }
         return _assert(case, resp, result)
     except Exception as e:
@@ -327,6 +332,104 @@ def execute_suite(cases: list[dict[str, Any]], base: str = "", token: str = "") 
     stats: dict[str, int] = {}
     for c in cases:
         r = execute_http_case(c, base, token=token)
+        results.append(r)
+        v = r.get("verdict", "ERROR")
+        stats[v] = stats.get(v, 0) + 1
+    return results, stats
+
+
+# ---------------- 资源占位符协议（update/delete 类用例的测试数据准备） ----------------
+# 背景（7.7.45 实测）：update/delete 用例需要"真实存在的资源 ID"，LLM 无法预知——
+# 第 1 轮写 {id} 占位（422 解析失败），第 2 轮写固定 UUID（404 不存在），回灌反复失败。
+# 解法：占位符协议扩展 + 资源工厂——平台从已通过的成功创建用例派生资源，注入真实 ID。
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+_RANDOM_UUID_PATS = [re.compile(p, re.I) for p in
+                     (r"<(random|随机)[_-]?uuid>", r"<(不存在|invalid|非法)[_-]?的?uuid>")]
+_EXISTING_UUID_PATS = [re.compile(p, re.I) for p in
+                       (r"<(item|resource|existing)[_-]?id>", r"<(existing|有效|真实)[_-]?uuid>",
+                        r"<item_id>")]
+
+
+def _sub_uuid(v: Any, repl: Callable[[str], str], pats: list) -> Any:
+    """递归替换字符串值中命中的占位符（repl 接收匹配片段，返回替换文本）。"""
+    if isinstance(v, str):
+        out = v
+        for pat in pats:
+            out = pat.sub(lambda m: repl(m.group(0)), out)
+        return out
+    if isinstance(v, dict):
+        return {k: _sub_uuid(x, repl, pats) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_sub_uuid(x, repl, pats) for x in v]
+    return v
+
+
+def _build_resource_pool(cases: list[dict[str, Any]], base: str, token: str,
+                         limit: int = 3, log: Callable[[str], None] | None = None) -> list[str]:
+    """资源工厂：重放"已通过的成功创建类用例"（POST + 描述含"创建"），从 2xx 响应
+    中提取 UUID 格式的资源 ID，构建真实资源池。失败/不足时返回已收集部分。"""
+    log = log or (lambda m: None)
+    pool: list[str] = []
+    factories = [c for c in cases
+                 if (c.get("request") or {}).get("method") == "POST"
+                 and "创建" in (c.get("description") or "")]
+    for f in factories[:limit]:
+        r = execute_http_case(f, base, token=token)
+        if r.get("verdict") == "PASS" and 200 <= (r.get("status") or 0) < 300:
+            try:
+                d = json.loads(r.get("response_body") or r.get("response_snippet") or "{}")
+            except Exception:
+                d = {}
+            uid = d.get("id") or d.get("uuid") or d.get("item_id")
+            if uid and _UUID_RE.match(str(uid)):
+                pool.append(str(uid))
+                log(f"资源工厂：创建资源成功 id={uid}")
+            if len(pool) >= limit:
+                break
+    return pool
+
+
+def execute_suite_with_resources(cases: list[dict[str, Any]], base: str = "", token: str = "",
+                                 log: Callable[[str], None] | None = None) \
+        -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """两阶段执行（资源占位符协议）：
+
+    阶段 1：静态替换 <random_uuid>/<不存在的uuid>（每条用例独立生成，用于 404 类用例）
+    阶段 2：资源工厂预创建真实资源 → 替换 <item_id>/<existing_uuid>（轮转分配池中不同 id）
+    无资源池时占位符原样保留（用例会失败，结果 hint 会指向资源准备问题）。
+    """
+    import itertools
+    log = log or (lambda m: None)
+    prepared: list[dict[str, Any]] = []
+    for idx, c in enumerate(cases):
+        c = dict(c)
+        if isinstance(c.get("request"), dict):
+            c["request"] = _sub_uuid(c["request"], lambda m: str(uuid.uuid4()),
+                                     _RANDOM_UUID_PATS)
+        c["_case_idx"] = idx
+        prepared.append(c)
+    pool = _build_resource_pool(prepared, base, token, log=log)
+    if pool:
+        ids = itertools.cycle(pool)
+        for c in prepared:
+            if isinstance(c.get("request"), dict):
+                c["request"] = _sub_uuid(c["request"], lambda m: next(ids), _EXISTING_UUID_PATS)
+    else:
+        for c in prepared:
+            if isinstance(c.get("request"), dict):
+                has = any(p.search(json.dumps(c["request"], ensure_ascii=False))
+                          for p in _EXISTING_UUID_PATS)
+                if has:
+                    c["_missing_resource"] = True
+    results: list[dict[str, Any]] = []
+    stats: dict[str, int] = {}
+    for c in prepared:
+        missing = c.pop("_missing_resource", False)
+        r = execute_http_case(c, base, token=token)
+        if missing and r.get("verdict") in ("FAIL", "ERROR"):
+            r["reason"] = (r.get("reason", "") +
+                           "｜资源占位符无可用资源：本轮成功创建类用例均未通过，"
+                           "无法为 update/delete 用例准备真实资源 ID——请先确保创建类用例通过")
         results.append(r)
         v = r.get("verdict", "ERROR")
         stats[v] = stats.get(v, 0) + 1

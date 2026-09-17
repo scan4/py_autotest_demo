@@ -30,7 +30,7 @@ import uuid
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
@@ -43,7 +43,7 @@ from .core.features import FeaturePoint, split_features
 from .core.generate import generate_test_cases
 from .core.openapi import (probe_openapi, parse_endpoints, build_symbol_map,
                            summarize_probe, match_endpoints)
-from .eval.executor import execute_suite
+from .eval.executor import execute_suite_with_resources
 
 # ---------------- 静态资源 ----------------
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -790,14 +790,15 @@ def _record_bug_findings(session, source_dir: str, results: list[dict]) -> None:
         store.close()
 
 
-def _execute_all(session, base: str, token: str, source_dir: str = "") -> tuple[list[dict], dict[str, int]]:
+def _execute_all(session, base: str, token: str, source_dir: str = "",
+                 log: Callable[[str], None] | None = None) -> tuple[list[dict], dict[str, int]]:
     """执行会话全部用例（真实 HTTP）+ 失败条目附规则初分类 + potential_bug 登记。"""
     from .eval.feedback import CAT_LABEL, classify_failure
     cases: list[dict] = []
     for entry, cs in session.test_cases.items():
         for c in cs:
             cases.append({**c, "_entry": entry})
-    results, stats = execute_suite(cases, base, token=token)
+    results, stats = execute_suite_with_resources(cases, base, token=token, log=log)
     for r in results:
         if r.get("verdict") in ("FAIL", "ERROR", "SKIPPED"):
             cat, hint = classify_failure(r)
@@ -1025,6 +1026,7 @@ def execute(req: ExecuteRequest):
     return {"results": results, "stats": stats, "base_url": base}
 
 
+
 @app.post("/api/feedback")
 def feedback(req: FeedbackRequest):
     """失败回灌（Agent 闭环第②步）：执行失败结果结构化 → 单 Agent 诊断 + 修正用例。
@@ -1080,7 +1082,9 @@ def iterate(req: IterateRequest):
     stopped_reason = ""
 
     for rd in range(1, max_rounds + 1):
-        results, stats = _execute_all(session, base, token, source_dir=req.source_dir)
+        res_log: list[str] = []
+        results, stats = _execute_all(session, base, token, source_dir=req.source_dir,
+                                      log=res_log.append)
         failed = _failed_count(stats)
         # 判定口径：potential_bug 用例（已知缺陷复现，预期就是 FAIL）单独计数——
         # 它不参与收敛/无改进判定，否则 bug 用例的稳定失败会让循环永不收敛，
@@ -1090,6 +1094,7 @@ def iterate(req: IterateRequest):
         failed_other = failed - failed_bug
         rounds.append({"round": rd, "stats": stats, "failed": failed,
                        "failed_bug": failed_bug, "failed_other": failed_other,
+                       "resource_log": res_log,
                        "total": sum(stats.values())})
         if failed == 0:
             converged = True
@@ -1372,6 +1377,7 @@ def replay_bug(finding_id: int, req: BugReplayRequest):
     still = None
     suggestion = ""
     fix_branch = f"ai-fix/bug-{finding_id}"
+    project = find_git_root(req.source_dir)
     if orig_status and now_status:
         still = (now_status == orig_status)
         if still:
