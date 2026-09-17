@@ -228,15 +228,29 @@ class FixAgent:
             task["summary"] = f"被测项目目录 {self.source_dir} 不在 git 仓库中，无法安全修复"
             return
         self.project = project
+        orig_branch = None
+        branch = None
         try:
             self._run(project)
         except Exception as e:
+            # 异常路径兜底恢复（实测：网络断导致 LLM 抛异常时，工作区可能已切到
+            # 修复分支甚至已有修改——必须恢复，否则"改坏无法复原"）
             import traceback as _tb
+            try:
+                if orig_branch and branch:
+                    cur = _git(project, "branch", "--show-current", check=False)
+                    if cur == branch:
+                        _git(project, "checkout", orig_branch, check=False)
+                    _git(project, "branch", "-D", branch, check=False)
+                    _restart_service(self.base, self.service_cmd, self.log)
+                    task["log"].append("异常恢复：已切回原分支并重启被测服务（工作区复原）")
+            except Exception as re_err:
+                task["log"].append(f"警告：异常恢复本身失败，请手动检查 git 状态: {re_err}")
             task["status"] = "failed"
-            task["summary"] = f"修复过程异常: {e}"
+            task["summary"] = f"修复过程异常（已尝试恢复工作区）: {e}"
             task["log"].append(_tb.format_exc(limit=5))
 
-    def _run(self, project: str) -> None:
+    def _run(self, project: str, orig_branch: str, branch: str) -> None:
         task = self.task
         from .executor import execute_http_case
 
@@ -245,8 +259,6 @@ class FixAgent:
             task["status"] = "failed"
             task["summary"] = f"被测项目工作区不干净，拒绝自动修复（防止误伤未提交的更改）：\n{dirty[:300]}"
             return
-        orig_branch = _git(project, "branch", "--show-current") or "HEAD"
-        branch = f"ai-fix/bug-{self.finding['id']}"
         recorded = (self.finding.get("evidence") or {}).get("actual_status")
 
         # 修复前基线（用于回归对比）

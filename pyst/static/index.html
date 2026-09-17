@@ -1121,6 +1121,8 @@ async function startFix(findingId) {
     const data = await api('/api/fix/start', {
       source_dir: state.selectedDir, finding_id: findingId, base_url: base,
       auth: auth, provider: $('providerSel').value, max_turns: 10, confirm: true });
+    const box = $('bugReplay_' + findingId);
+    if (box) box.innerHTML = '<div class="loading">🤖 修复任务已启动（后台执行中）——Agent 的每一步动作见下方运行日志；失败会自动回滚工作区</div>';
     pollFix(data.task_id, findingId);
   } catch(e) { log('AI 修复启动失败: ' + e.message); }
 }
