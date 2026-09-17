@@ -257,7 +257,7 @@ class FixAgent:
 
     def _run(self, project: str, orig_branch: str, branch: str) -> None:
         task = self.task
-        from .executor import execute_http_case
+        from .executor import execute_http_case, execute_suite
 
         if not _git(project, "status", "--porcelain").strip() == "":
             dirty = _git(project, "status", "--porcelain")
