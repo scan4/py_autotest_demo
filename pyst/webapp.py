@@ -820,8 +820,10 @@ def _feedback_core(session, source_dir: str, provider: str, entry_filter: str = 
     """失败回灌核心（/api/feedback 与多轮迭代共用）。
 
     previous_attempts：前几轮已尝试未成功的修正摘要（轮次间记忆，防 LLM 重复同方案）。
+    回灌 Agent 工具化（7.7.51）：启用 read_source——诊断 Agent 可读被测源码验证假设
+    （与 FixAgent 复用同一实现），只读不写。
     """
-    from .eval.feedback import (structure_failures, feedback_refine_cases,
+    from .eval.feedback import (structure_failures, feedback_refine_cases_with_tools,
                                 CAT_BUG)
 
     structured_all = structure_failures(session.results)
@@ -897,8 +899,9 @@ def _feedback_core(session, source_dir: str, provider: str, entry_filter: str = 
                   "control_sites": [], "interface": None}
         case_count = min(_REGEN_MAX_CASES, max(len(cases), 8))
         try:
-            diagnosis, refined_dicts = feedback_refine_cases(
-                fp, cases_with_exec, structured, provider=provider, case_count=case_count)
+            diagnosis, refined_dicts = feedback_refine_cases_with_tools(
+                fp, cases_with_exec, structured, provider=provider, case_count=case_count,
+                project_root=source_dir)
         except Exception as e:
             import traceback as _tb
             out[real_entry] = {"error": f"回灌失败: {e}", "traceback": _tb.format_exc(limit=2)}
@@ -1022,8 +1025,24 @@ def execute(req: ExecuteRequest):
         raise HTTPException(status_code=400,
                             detail="执行需要被测服务地址 base_url（请在步骤1填写并探测，或请求传入）")
     token = _resolve_token(session, base, req.auth)
-    results, stats = _execute_all(session, base, token)
-    return {"results": results, "stats": stats, "base_url": base}
+    # 资源工厂日志收集进响应（可观察：为什么 <item_id> 没被替换，7.7.48）
+    factory_logs: list[str] = []
+    results, stats = _execute_all(session, base, token,
+                                  log=factory_logs.append)
+    resp: dict = {"results": results, "stats": stats, "base_url": base}
+    if factory_logs:
+        resp["resource_logs"] = factory_logs
+    # 无凭证执行警告：用例里的 <valid_jwt>/<item_id> 占位符不会被替换——
+    # 所有需鉴权用例 401/403、资源工厂失败（服务重启会清空会话凭证，需重填）
+    if not token:
+        import json as _json
+        blob = _json.dumps(session.test_cases, ensure_ascii=False)
+        if "<valid_jwt>" in blob or "<item_id>" in blob:
+            resp["warnings"] = ["⚠️ 本次执行未配置测试凭证：用例中的 <valid_jwt>/<item_id> 占位符"
+                                "不会被替换——需鉴权的用例将 401/403，资源工厂无法创建资源"
+                                "（update/delete 用例将 422）。请在上方填入账号密码后重新执行"
+                                "（服务重启后需重新填写）"]
+    return resp
 
 
 
@@ -1376,26 +1395,30 @@ def replay_bug(finding_id: int, req: BugReplayRequest):
     now_status = result.get("status")
     still = None
     suggestion = ""
+    # 无凭证重放的语义警告（7.7.47 实测）：登记的复现请求可能不带 Authorization，
+    # 无 token 时服务端先拒 401——"行为已变化"的判定会误导（缺陷可能仍在，只是没过鉴权）
+    if not token:
+        suggestion = "⚠️ 未配置测试凭证，重放请求可能被鉴权拦截（401）——判定不可靠，建议先在步骤4配置凭证后重放。"
     fix_branch = f"ai-fix/bug-{finding_id}"
     project = find_git_root(req.source_dir)
+    # 无条件初始化（7.7.53 教训：曾放在"仍复现"分支内，"行为已变化"路径引用
+    # 未赋值变量 → UnboundLocalError → 平台 500——pytest 未覆盖 replay 路由漏网）
+    branches = _git(project, "branch", "--list", fix_branch, check=False) if project else ""
     if orig_status and now_status:
         still = (now_status == orig_status)
         if still:
             suggestion = f"缺陷仍复现（实际 {now_status}，与登记时一致）——保留登记"
             # AI 修复分支存在但未应用时，说明重放的是"未应用修复"的主工作区代码——
             # 这是预期状态（修复待人工审阅 merge），提示用户操作路径
-            project = find_git_root(req.source_dir)
-            if project:
-                branches = _git(project, "branch", "--list", fix_branch, check=False)
-                if fix_branch in branches:
-                    suggestion += (f"（注意：AI 修复分支 {fix_branch} 已存在但尚未应用——"
-                                   "当前重放的是未应用修复的主工作区代码，可点「应用修复分支」后再验证）")
+            if fix_branch in branches:
+                suggestion += (f"（注意：AI 修复分支 {fix_branch} 已存在但尚未应用——"
+                               "当前重放的是未应用修复的主工作区代码，可点「应用修复分支」后再验证）")
         else:
             suggestion = (f"服务端行为已变化（登记时 {orig_status} → 现在 {now_status}），"
                           "缺陷可能已被修复或环境不同——建议核对后解除登记")
     return {"finding_id": finding_id, "replay": result,
             "recorded_status": orig_status, "still_reproduces": still,
-            "fix_branch": fix_branch if _git(project, "branch", "--list", fix_branch, check=False) else "",
+            "fix_branch": fix_branch if (project and fix_branch in branches) else "",
             "suggestion": suggestion}
 
 

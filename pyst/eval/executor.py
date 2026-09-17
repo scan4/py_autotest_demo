@@ -7,10 +7,12 @@
   - runner.py（命令行：python runner.py cases.json --base http://...）
   - webapp /api/execute mode=ai（前端"AI 执行"按钮）
 
-断言策略（现状，待问题1增强）：
-  1. expected_status 精确比对（主断言）
-  2. 无 expected_status 时关键词兜底（响应与预期特征匹配）
-  3. 都无法判断 → WARN 人工
+断言策略（意图断言已实现，见 pyst/eval/assertions.py）：
+  1. expected_status 精确匹配 → PASS（最强证据）
+  2. 意图一致（从 description/expected_results 提取意图，可接受状态集判定）→ PASS（标注预期码偏差）
+  3. 意图不符 → FAIL（真失败）；探查型用例 → 退回精确对比
+  4. 响应体结构检查（4xx detail 结构 / 2xx JSON 合法性）作为回灌证据
+  5. 均无法判断 → WARN 人工
 """
 
 from __future__ import annotations
@@ -69,7 +71,7 @@ def _assert(case: dict[str, Any], resp: requests.Response, result: dict[str, Any
       4. 探查/意图不明确 → 退回精确对比；无预期码 → 关键词兜底 / WARN
 
     【遗留】安全加固（路径沙箱祖先判断/敏感拒绝清单）与意图断言均已落地，
-    对应回归测试见 tests/（68 用例）；断言可靠性第二阶段（OpenAPI 响应 schema
+    对应回归测试见 tests/；断言可靠性第二阶段（OpenAPI 响应 schema
     字段级断言）待 OpenAPI 探测扩展 responses 提取后实施。
     """
     from .assertions import assert_case
@@ -158,10 +160,27 @@ def _is_token_placeholder(value: str) -> bool:
     return any(ord(ch) > 127 for ch in s)
 
 
+# 功能性 token 占位：占位名本身表达"故意携带无效/过期凭证"的负向测试意图。
+# 实测教训（update_item）：这类占位被归一化替换成真实 token 后，"无效令牌→403"
+# 的用例实际拿到 200，负向用例被平台亲手破坏，反而被判"用例缺陷"反复回灌。
+# 处理：原样保留发给服务端 → 服务端验签失败返回 401/403 → 正是用例预期。
+_FUNCTIONAL_TOKEN_PAT = re.compile(
+    r"<[^>]*(expired|invalid|fake|malformed|forged|bad[_-]?token"
+    r"|过期|无效|伪造|非法|错误|假)[^>]*>", re.I)
+
+
+def _is_functional_token_placeholder(value: str) -> bool:
+    """占位名是否表达负向意图（过期/无效/伪造凭证）——这类占位必须保留原值。"""
+    return bool(_FUNCTIONAL_TOKEN_PAT.search(value))
+
+
 def _apply_token(case: dict[str, Any], headers: dict[str, Any], token: str) -> dict[str, Any]:
     """token 应用（三级策略，返回新 dict 不改原用例）：
 
-    1. Authorization 头为占位写法（任意变体）→ 归一化替换为真实 token
+    1. Authorization 头为占位写法（任意变体）：
+       - 功能性占位（<expired_jwt>/<invalid_jwt> 等）→ 原样保留，服务端会以
+         401/403 拒绝无效凭证——正是负向用例的预期行为
+       - 待填占位（<valid_jwt>/中文占位等）→ 替换为真实 token
     2. 已有真实 Authorization 头（非占位）→ 原样保留（用例自带 token 表达其意图）
     3. 没有 Authorization 头 → 自动注入真实 token，但负向用例除外：
        预期状态码为 401/403，或描述含"未认证/不携带"等特征——这些用例本意就是
@@ -173,10 +192,11 @@ def _apply_token(case: dict[str, Any], headers: dict[str, Any], token: str) -> d
         sv = str(v)
         if k.lower() == "authorization":
             has_auth = True
-            if token and _is_token_placeholder(sv):
-                out[k] = f"Bearer {token}"      # 归一化替换（占位写法不限）
+            if token and _is_token_placeholder(sv) \
+                    and not _is_functional_token_placeholder(sv):
+                out[k] = f"Bearer {token}"      # 待填占位 → 替换为真实 token
             else:
-                out[k] = v
+                out[k] = v                      # 真实凭证 / 功能性占位 → 保留
         elif isinstance(v, str) and _TOKEN_PLACEHOLDER in v:
             out[k] = v.replace(_TOKEN_PLACEHOLDER, token)
         else:
@@ -311,7 +331,8 @@ def execute_http_case(case: dict[str, Any], base: str = "", timeout: int = 30,
             "status": resp.status_code,
             "method": method,
             "url": url,
-            "request": req,
+            "request": req,          # 原始用例的 request（占位符未替换的版本，仅展示用）
+            "token_applied": bool(token),   # 本次执行凭证是否生效——分类器判定"占位符未替换"的依据
             "response_snippet": (resp.text or "")[:300],
             "response_body": (resp.text or "")[:2000],   # 资源工厂提取 id 用（完整一点）
         }
@@ -398,7 +419,6 @@ def execute_suite_with_resources(cases: list[dict[str, Any]], base: str = "", to
     阶段 2：资源工厂预创建真实资源 → 替换 <item_id>/<existing_uuid>（轮转分配池中不同 id）
     无资源池时占位符原样保留（用例会失败，结果 hint 会指向资源准备问题）。
     """
-    import itertools
     log = log or (lambda m: None)
     prepared: list[dict[str, Any]] = []
     for idx, c in enumerate(cases):

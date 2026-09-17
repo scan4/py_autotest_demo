@@ -781,6 +781,13 @@ async function executeCases() {
     renderResults();
     const s = data.stats || {};
     log(`执行完成：${Object.entries(s).map(([k, v]) => `${k} ${v}`).join(' / ')}（共 ${data.results.length} 条）`);
+    // 无凭证警告 / 资源工厂日志展示
+    if (data.warnings && data.warnings.length) {
+      data.warnings.forEach(w => log(w));
+      $('execResult').insertAdjacentHTML('afterbegin',
+        `<div class="result-item" style="border-color:#b45309"><b style="color:#b45309">${escapeHtml(data.warnings.join(' '))}</b></div>`);
+    }
+    (data.resource_logs || []).forEach(m => log('  🔧 ' + m));
     // 有失败（FAIL/ERROR/SKIPPED）才开放"失败回灌"
     const failed = (data.results || []).filter(r => ['FAIL','ERROR','SKIPPED'].includes(r.verdict)).length;
     $('btnFeedback').disabled = failed === 0;

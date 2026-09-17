@@ -120,3 +120,32 @@ def test_assert_intent_mismatch_fail():
 def test_assert_probe_falls_back_exact():
     r = _assert_of("未知字段：验证是否被忽略或拒绝", 200, 404)
     assert r["verdict"] == "FAIL" and r["assertion"]["mode"] == "probe"
+
+
+# ---------------- 7.7.47 功能性 token 占位符（负向用例不被平台破坏） ----------------
+
+def test_functional_token_placeholder_preserved():
+    """<invalid_jwt>/<expired_jwt> 表达负向意图，必须原样保留不得替换为真实 token。"""
+    from pyst.eval.executor import _apply_token
+    case = {"description": "无效 JWT 更新物品", "expected_status": 403}
+    out = _apply_token(case,
+                       {"Authorization": "Bearer <invalid_jwt>"}, token="real.jwt.token")
+    assert out["Authorization"] == "Bearer <invalid_jwt>", "负向占位被误替换"
+
+
+def test_valid_token_placeholder_replaced():
+    from pyst.eval.executor import _apply_token
+    case = {"description": "正常更新", "expected_status": 200}
+    out = _apply_token(case,
+                       {"Authorization": "Bearer <valid_jwt>"}, token="real.jwt.token")
+    assert out["Authorization"] == "Bearer real.jwt.token"
+
+
+def test_classify_unresolved_resource_placeholder():
+    """<item_id> 字面量发出 → 422：分类应指向资源准备失败而非参数错误。"""
+    from pyst.eval.feedback import classify_failure, CAT_CASE
+    cat, hint = classify_failure({
+        "verdict": "FAIL", "status": 422, "expected_status": 200,
+        "description": "超级用户更新物品",
+        "request": {"method": "PUT", "url": "/api/v1/items/<item_id>"}})
+    assert cat == CAT_CASE and "资源" in hint

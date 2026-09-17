@@ -388,6 +388,9 @@ def _build_api_output_section(interface: dict | None) -> str:
    "Authorization": "Bearer <valid_jwt>"（执行时平台自动替换为真实 token）；
    严禁使用其他占位写法（如 <有效token>、<your_token>）或中文占位——HTTP 头仅允许
    ASCII 字符，非法写法会导致请求根本发不出去
+   【负向凭证占位】测试"无效/过期凭证被拒绝"的用例，用 "Bearer <invalid_jwt>" /
+   "Bearer <expired_jwt>" 占位（平台原样发送，服务端会返回 401/403——正是预期）；
+   严禁给这类用例写 <valid_jwt>（会被替换为有效 token，用例意图被破坏）
 
 【约束】
 - request 里的 method/url/参数名必须来自【HTTP 接口信息】，不得编造接口信息中不存在的 URL 或参数名

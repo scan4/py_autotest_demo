@@ -12,11 +12,11 @@ AI 修复子 Agent（方案 A：pythonTest 内置，完全全自动）
 - 失败 → 切回原分支并删除修复分支（工作区恢复原状）；成功 → commit 留在分支上，输出 diff 供人审 merge
 - 结束后**恢复原分支并重启被测服务**——把环境还给用户
 
-【工具协议】（文本协议，LLM 每轮输出一个 JSON 动作）
-  {"action":"read_source","file":"相对路径","start":1,"end":200}
-  {"action":"edit","file":"相对路径","old":"原文精确片段","new":"替换文本"}   # old 必须唯一
-  {"action":"run_tests"}                                                    # 重启服务+复现+回归
-  {"action":"finish","summary":"..."}                                       # 声明完成
+【工具协议】（原生 function calling，FIX_TOOLS schema 约束模型输出 tool_calls）
+  read_source(file, start, end)   # 读被测源码片段（带行号，路径沙箱约束）
+  edit(file, old, new)            # 精确替换（old 必须唯一；禁止碰测试文件）
+  run_tests()                     # 重启服务+复现+回归，结果回填对话
+  finish(summary)                 # 声明完成（必须先跑过 run_tests）
 
 【铁律】（写入 system prompt）
 - 只修业务代码，禁止碰测试与用例（复现用例锁定）
@@ -89,8 +89,50 @@ def _git(project: str, *args: str, check: bool = True) -> str:
     r = subprocess.run(["git", "-C", project, *args],
                        capture_output=True, text=True, timeout=60)
     if check and r.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} 失败: {r.stderr.strip()[:200]}")
+        # stderr 可能为空（如 commit 无变更时提示在 stdout："nothing to commit"）——
+        # 只带 stderr 会产出"失败: "空信息（7.7.50 实测），stdout 也带上
+        detail = (r.stderr.strip() or r.stdout.strip())[:200]
+        raise RuntimeError(f"git {' '.join(args)} 失败: {detail}")
     return r.stdout.strip()
+
+
+# ---------------- 通用读源码工具（FixAgent 与回灌诊断 Agent 共用，7.7.51） ----------------
+def _safe_resolve(root: Path, file: str,
+                  deny_parts: set[str] | None = None) -> tuple[Path | None, str]:
+    """统一路径安全解析：①resolve 后必须位于项目根之内（祖先判断，非前缀匹配——
+    startswith 会被兄弟目录 /proj2 绕过）；②命中敏感拒绝清单则拒绝。
+    返回 (安全路径, 错误信息)——安全时错误为空。"""
+    try:
+        p = (root / file).resolve()
+    except Exception as e:
+        return None, f"错误：路径解析失败 {e}"
+    if p != root and root not in p.parents:
+        return None, "错误：路径越界（只能访问被测项目目录内的文件）"
+    for part in p.parts:
+        if deny_parts and part in deny_parts:
+            return None, f"错误：禁止访问敏感路径（{part}/）"
+    name = p.name.lower()
+    if name.startswith(".env") or name.endswith((".pem", ".key")) or name.startswith("id_"):
+        return None, "错误：禁止访问敏感文件（密钥/凭证类）"
+    return p, ""
+
+
+def read_source_snippet(project_root: str, file: str, start: int = 1, end: int = 400,
+                        deny_parts: set[str] | None = None) -> str:
+    """读取被测项目内文件的行片段（带行号），供 LLM 工具调用（read_source）。
+
+    路径受沙箱约束：只允许项目根内的非敏感文件。文件不存在/越界时返回错误说明。
+    """
+    p, err = _safe_resolve(Path(project_root).resolve(), file, deny_parts)
+    if err:
+        return err
+    if not p.exists():
+        return f"错误：文件不存在 {file}"
+    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    start = max(1, int(start or 1))
+    end = min(len(lines), int(end or 400))
+    numbered = [f"{i}: {lines[i-1]}" for i in range(start, end + 1)]
+    return f"{file}（行 {start}-{end}，共 {len(lines)} 行）:\n" + "\n".join(numbered)
 
 
 def find_git_root(path: str) -> str | None:
@@ -154,35 +196,12 @@ class FixAgent:
                    "node_modules", ".venv", "venv"}
 
     def _safe_path(self, file: str) -> tuple[Path | None, str]:
-        """统一路径安全解析：①resolve 后必须位于项目根之内（祖先判断，非前缀匹配——
-        startswith 会被兄弟目录 /proj2 绕过）；②命中敏感拒绝清单则拒绝。
-        返回 (安全路径, 错误信息)——安全时错误为空。"""
-        try:
-            root = Path(self.project).resolve()
-            p = (root / file).resolve()
-        except Exception as e:
-            return None, f"错误：路径解析失败 {e}"
-        if p != root and root not in p.parents:
-            return None, "错误：路径越界（只能访问被测项目目录内的文件）"
-        for part in p.parts:
-            if part in self._DENY_PARTS:
-                return None, f"错误：禁止访问敏感路径（{part}/）"
-        name = p.name.lower()
-        if name.startswith(".env") or name.endswith((".pem", ".key")) or name.startswith("id_"):
-            return None, "错误：禁止访问敏感文件（密钥/凭证类）"
-        return p, ""
+        root = Path(self.project).resolve()
+        return _safe_resolve(root, file, self._DENY_PARTS)
 
     def _tool_read_source(self, file: str, start: int = 1, end: int = 400) -> str:
-        p, err = self._safe_path(file)
-        if err:
-            return err
-        if not p.exists():
-            return f"错误：文件不存在 {file}"
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        start = max(1, int(start or 1))
-        end = min(len(lines), int(end or 400))
-        numbered = [f"{i}: {lines[i-1]}" for i in range(start, end + 1)]
-        return f"{file}（行 {start}-{end}，共 {len(lines)} 行）:\n" + "\n".join(numbered)
+        return read_source_snippet(self.project, file, start, end,
+                                   deny_parts=self._DENY_PARTS)
 
     def _tool_edit(self, file: str, old: str, new: str) -> str:
         p, err = self._safe_path(file)
@@ -258,6 +277,28 @@ class FixAgent:
             task["status"] = "failed"
             task["summary"] = f"被测项目工作区不干净，拒绝自动修复（防止误伤未提交的更改）：\n{dirty[:300]}"
             return
+        # 启动预检（7.7.50 实测）：复现请求已不复现缺陷行为 → 修复无从谈起（上次
+        # 修复已 merge 时，Agent 会"空手验证通过"→ commit nothing to commit 崩溃）。
+        # 此时正确动作是解除登记或重放确认，而不是再次修复
+        try:
+            pre = execute_http_case(
+                {"_entry": self.finding["entry"], "description": self.finding["description"],
+                 "request": self.finding.get("request"),
+                 "expected_status": self.finding.get("expected_status")},
+                self.base, token=self.token)
+            recorded = (self.finding.get("evidence") or {}).get("actual_status")
+            # 只在拿到真实 HTTP 响应（verdict PASS/FAIL，status>0）时才判定"已不复现"；
+            # SKIPPED/ERROR（请求没发出去/环境问题）不算——否则会误终止修复流程
+            if recorded and pre.get("verdict") in ("PASS", "FAIL") \
+                    and (pre.get("status") or 0) > 0 and pre.get("status") != recorded:
+                task["status"] = "failed"
+                task["summary"] = (f"缺陷行为已不复现（登记时 {recorded} → 现在 {pre.get('status')}）——"
+                                   "该缺陷可能已被修复过（修复分支已 merge）。请先「重放验证」确认，"
+                                   "确认无误后「解除登记」即可，无需再次修复")
+                task["log"].append(f"启动预检：缺陷行为已不复现（{recorded} → {pre.get('status')}），终止修复")
+                return
+        except Exception as e:
+            self.log(f"启动预检失败（继续修复流程）: {e}")  # 预检失败不阻塞（网络抖动等）
         orig_branch = _git(project, "branch", "--show-current") or "HEAD"
         branch = f"ai-fix/bug-{self.finding['id']}"
         try:
@@ -282,12 +323,7 @@ class FixAgent:
 
     def _run(self, project: str, orig_branch: str, branch: str) -> None:
         task = self.task
-
-        if not _git(project, "status", "--porcelain").strip() == "":
-            dirty = _git(project, "status", "--porcelain")
-            task["status"] = "failed"
-            task["summary"] = f"被测项目工作区不干净，拒绝自动修复（防止误伤未提交的更改）：\n{dirty[:300]}"
-            return
+        # 工作区干净性已在 run() 检查（预检只发 HTTP 请求，不会弄脏工作区，无需重复）
         recorded = (self.finding.get("evidence") or {}).get("actual_status")
 
         # 修复前基线（用于回归对比）
@@ -308,7 +344,7 @@ class FixAgent:
         file_tree = _git(project, "ls-files")[:3000]
         finding = self.finding
         ev = finding.get("evidence") or {}
-        messages: list[dict[str, str]] = [
+        messages: list[dict[str, Any]] = [   # 含 tool_calls 嵌套结构，不能用 str 值标注
             {"role": "system", "content": _FIX_SYSTEM},
             {"role": "user", "content": (
                 f"【缺陷登记 #{finding['id']}】\n描述: {finding.get('description')}\n"
@@ -404,19 +440,42 @@ class FixAgent:
         success = ok
 
         if success:
+            # commit 前检查（7.7.50 实测）：无变更时 commit 会以 "nothing to commit"
+            # 失败——通常意味着缺陷早已被修复过（本次 Agent 空手验证通过）。
+            # 优雅终止并说明，而不是抛异常走异常恢复
+            if not _git(project, "status", "--porcelain").strip():
+                task["status"] = "failed"
+                task["summary"] = ("修复分支上没有任何代码变更——缺陷行为消失是因为此前已修复过"
+                                   "（修复分支已 merge 进主分支），本次 Agent 无需也无法再修。"
+                                   "请「重放验证」确认后「解除登记」")
+                task["log"].append("commit 防护：无代码变更，终止（缺陷已在此前修复）")
+                _git(project, "checkout", orig_branch, check=False)
+                _git(project, "branch", "-D", branch, check=False)
+                _restart_service(self.base, self.service_cmd, self.log)
+                task["log"].append("已切回原分支并重启被测服务")
+                return
             _git(project, "add", "-A")
             _git(project, "commit", "-m",
                  f"fix: {finding.get('description', '')}（AI 修复，bug #{finding['id']}）\n\n{summary}")
             # 修复分支推送到被测项目自己的远端（异地备份 + 可随时复原/审阅）。
-            # push 失败（网络等）不阻塞流程——本地分支是真相源，可稍后手动 push
-            push_note = "（未推远端：项目无 remote）"
+            # push 失败（网络等）不阻塞流程——本地分支是真相源，可稍后手动 push。
+            # 三种结果分别如实报告（7.7.52 教训：吞掉真实原因会产生误导性文案——
+            # 实测网络断时 SSH 超时被 except 吞掉，summary 错误显示"项目无 remote"）
+            push_note = ""
             try:
-                if _git(project, "remote"):
-                    _git(project, "push", "origin", branch, check=False)
-                    push_note = f"（已推送 origin/{branch}）"
-                task["log"].append(f"修复分支推送：{push_note}")
+                if not _git(project, "remote"):
+                    push_note = "（未推远端：项目无 remote）"
+                else:
+                    r = subprocess.run(["git", "-C", project, "push", "origin", branch],
+                                       capture_output=True, text=True, timeout=60)
+                    if r.returncode == 0:
+                        push_note = f"（已推送 origin/{branch}）"
+                    else:
+                        push_note = (f"（推送失败：{(r.stderr or r.stdout).strip()[:120]}"
+                                     "——本地分支是真相源，网络恢复后可手动 git push）")
             except Exception as e:
-                task["log"].append(f"修复分支推送失败（不影响本地结果，可稍后手动 push）: {e}")
+                push_note = f"（推送异常：{e}——本地分支是真相源，网络恢复后可手动 git push）"
+            task["log"].append(f"修复分支推送：{push_note}")
             patch = _git(project, "diff", orig_branch, branch)
             task["patch"] = patch
             task["branch"] = branch

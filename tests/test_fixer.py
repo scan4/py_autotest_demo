@@ -116,8 +116,13 @@ def fix_env(tmp_path, monkeypatch):
     proj = _mk_project(tmp_path)
     import pyst.eval.fixer as fx
     monkeypatch.setattr(fx, "_restart_service", lambda *a, **k: None)
-    monkeypatch.setattr("pyst.eval.fixer.execute_http_case",
-                        lambda case, base, token="": {"verdict": "PASS", "status": 422})
+    # execute_http_case 序列化 mock：第一次调用是 FixAgent 启动预检（缺陷仍在，
+    # 返回登记时的 200），之后是修复后的复现验证（缺陷消失，422）
+    state = {"calls": 0}
+    def fake_execute(case, base, token=""):
+        state["calls"] += 1
+        return {"verdict": "PASS", "status": 200 if state["calls"] == 1 else 422}
+    monkeypatch.setattr("pyst.eval.fixer.execute_http_case", fake_execute)
     monkeypatch.setattr("pyst.eval.fixer.execute_suite_with_resources",
                         lambda cases, base, token="", log=None: ([], {"PASS": 1}))
     return proj, fx
@@ -182,3 +187,21 @@ def test_fix_e2e_rollback_on_failed_validation(fix_env, tmp_path):
         monkey.undo()
     assert a.task["success"] is False
     assert (Path(proj) / "backend" / "app.py").read_text() == "def validate_title(t):\n    return len(t) >= 1\n"
+
+
+def test_fix_precheck_terminates_when_already_fixed(tmp_path, monkeypatch):
+    """缺陷行为已不复现（此前修复已 merge）→ 启动预检直接终止，不走修复流程（7.7.50）。"""
+    proj = _mk_project(tmp_path)
+    import pyst.eval.fixer as fx
+    monkeypatch.setattr(fx, "_restart_service", lambda *a, **k: None)
+    # 复现请求返回 422 != 登记时的 200 → 预检判定"已修复"
+    monkeypatch.setattr(fx, "execute_http_case",
+                        lambda case, base, token="": {"verdict": "PASS", "status": 422})
+    a = FixAgent("t9", SimpleNamespace(test_cases={}), proj, _finding(), proj,
+                 "", "", "deepseek", max_turns=3, llm_client=FakeLLM([]))
+    a.run()
+    assert a.task["success"] is False
+    assert "已不复现" in a.task["summary"] and "解除登记" in a.task["summary"]
+    # 工作区未被切到修复分支（预检在切分支之前终止）
+    assert "ai-fix/bug-1" not in subprocess.run(
+        ["git", "-C", proj, "branch", "--list"], capture_output=True, text=True).stdout

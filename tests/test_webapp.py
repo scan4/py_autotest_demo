@@ -1,4 +1,5 @@
 """webapp 路由级集成测试（TestClient + mock LLM/executor，7.7.44 集成层）。"""
+import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -43,7 +44,7 @@ def test_feedback_forced_restore_e2e(client, monkeypatch):
                   "status": 200, "expected_status": 400,
                   "request": {"method": "POST", "url": "/x"},
                   "response_snippet": '{"title":"   "}', "reason": "200!=400"}]
-    mp.setattr("pyst.eval.feedback.feedback_refine_cases", lambda *a, **k: (
+    mp.setattr("pyst.eval.feedback.feedback_refine_cases_with_tools", lambda *a, **k: (
         [{"description": "空白 title 用例", "category": "case_defect", "cause": "c",
           "action": "已修正用例"}],
         [{"description": "空白 title 用例", "request": {"method": "POST", "url": "/x"},
@@ -73,7 +74,7 @@ def test_iterate_no_improvement_stop(client, monkeypatch):
         [{"entry": "e1", "description": "title 为纯空白字符创建物品", "verdict": "FAIL", "status": 200,
           "category": "potential_bug", "request": {"method": "POST", "url": "/x"}}],
         {"FAIL": 1}))
-    mp.setattr("pyst.eval.feedback.feedback_refine_cases", lambda *a, **k: (
+    mp.setattr("pyst.eval.feedback.feedback_refine_cases_with_tools", lambda *a, **k: (
         [{"description": "title 为纯空白字符创建物品", "category": "potential_bug", "cause": "c",
           "action": "建议报告bug"}],
         [{"description": "title 为纯空白字符创建物品", "request": {"method": "POST", "url": "/x"},
@@ -93,3 +94,49 @@ def test_fix_start_requires_confirm(client):
     c, _ = client
     r = c.post("/api/fix/start", json={"source_dir": DIR, "finding_id": 999})
     assert r.status_code == 400 and "显式确认" in r.json()["detail"]
+
+
+# ---------------- 7.7.53 replay 路由回归（branches 未赋值导致 500） ----------------
+
+def _mk_bug(store, source_dir, actual_status) -> int:
+    """登记一条缺陷（复现请求带 url 供 mock 用），返回 finding id。"""
+    return store.upsert_bug_finding(
+        "e1", source_dir, "负数 limit 请求列表", 
+        {"method": "GET", "url": "/api/v1/items/", "headers": {}, "query": {"limit": -1}},
+        422, {"actual_status": actual_status, "response_snippet": "err"})
+
+
+def test_replay_behavior_changed_path(client, monkeypatch, tmp_path):
+    """重放判定"行为已变化"（still=False）路径不得 500（7.7.53 回归：branches 未赋值）。"""
+    tc, mp = client
+    src = str(tmp_path / "proj")
+    os.makedirs(src, exist_ok=True)
+    from pyst.storage.db import TestCaseStore
+    _mk_bug(TestCaseStore(webapp._DB_PATH), src, 500)
+    import pyst.eval.fixer as fx
+    mp.setattr(fx, "find_git_root", lambda p: None)          # 无 git → project=None
+    mp.setattr("pyst.eval.executor.execute_http_case",
+               lambda case, base, token="": {"verdict": "FAIL", "status": 422})
+    r = tc.post("/api/bugs/1/replay", json={"source_dir": src, "base_url": "http://x"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["still_reproduces"] is False                  # 500 → 422，行为已变化
+    assert "解除登记" in data["suggestion"]
+
+
+def test_replay_still_reproduces_path(client, monkeypatch, tmp_path):
+    """重放仍复现路径（修复分支不存在 → project=None）：suggestion 正常拼接。"""
+    tc, mp = client
+    src = str(tmp_path / "proj2")
+    os.makedirs(src, exist_ok=True)
+    from pyst.storage.db import TestCaseStore
+    fid = _mk_bug(TestCaseStore(webapp._DB_PATH), src, 500)
+    import pyst.eval.fixer as fx
+    mp.setattr(fx, "find_git_root", lambda p: None)
+    mp.setattr("pyst.eval.executor.execute_http_case",
+               lambda case, base, token="": {"verdict": "FAIL", "status": 500})
+    r = tc.post(f"/api/bugs/{fid}/replay", json={"source_dir": src, "base_url": "http://x"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["still_reproduces"] is True
+    assert "保留登记" in data["suggestion"]

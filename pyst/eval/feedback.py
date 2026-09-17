@@ -17,7 +17,8 @@ LLM 在此基础上做语义诊断——规则给信号，LLM 给结论，避免
 【铁律】判定为 potential_bug 的用例，禁止把预期改成"错误行为"来让它变绿——
 测试的价值恰是发现 bug；这类用例原样保留并在诊断里标注"建议报告 bug"。
 """
-
+import json
+import re
 from typing import Any, Callable
 
 from .assertions import INTENT_LABEL
@@ -52,6 +53,25 @@ def classify_failure(result: dict[str, Any]) -> tuple[str, str]:
     if verdict == "SKIPPED":
         return CAT_CASE, "用例不可执行（缺 URL 或非 HTTP 方法），需修正 request 构造"
     if verdict == "FAIL":
+        # 未解析占位符优先识别（7.7.47 实测）：资源占位符 <item_id> 没被替换成真实 ID
+        # 就发出 → 服务端 422（非法 UUID）——这不是参数构造错误，是资源准备失败
+        import re as _re
+        req_blob = json.dumps(result.get("request") or {}, ensure_ascii=False)
+        if _re.search(r"<(item|resource|existing)[_-]?id>", req_blob, _re.I):
+            return CAT_CASE, ("请求中仍含未替换的资源占位符 <item_id>——资源工厂未能准备"
+                              "真实资源 ID（需先有通过的成功创建类用例，从中提取资源 ID）。"
+                              "修法：确认创建类用例通过后再执行本用例，或用真实存在的资源 ID 替换")
+        if "Bearer <valid_jwt>" in req_blob and not result.get("token_applied", True):
+            return CAT_CASE, ("本次执行没有生效的测试凭证（未配置，或服务重启后会话凭证已清空）——"
+                              "<valid_jwt> 占位不会被替换，需鉴权用例全部 401/403。"
+                              "这不是用例错误：请配置账号密码后重新执行")
+        # 5xx 优先于意图断言（7.7.49 实测）：实际 500 是服务端异常，不是"预期码写错"——
+        # LLM 预期 422 的负向用例（如 skip=-1）打出 500，是真缺陷（potential_bug），
+        # 修预期为 500 等于掩盖 bug
+        if 500 <= status < 600:
+            return CAT_BUG, (f"实际 {status}：服务端内部错误——参数/输入触发了服务端未处理异常。"
+                             "若用例本意是测校验拒绝（预期 4xx），这里暴露的是真实缺陷："
+                             "服务端缺少参数约束（如负数/越界值未校验），应报告而非修改用例预期")
         # 意图断言证据优先（7.7.45）：意图不符的 FAIL，正确预期就在 acceptable 里
         a = result.get("assertion") or {}
         if a.get("mode") == "intent" and a.get("acceptable"):
@@ -300,6 +320,9 @@ def build_feedback_prompt(feature: dict[str, Any], cases: list[dict[str, Any]],
 - 需要有效凭证的场景：在 test_steps 第一步写明前置步骤（如"1. 前置：调用登录接口获取有效 token"），
   header 值【必须】使用统一占位符 "Authorization": "Bearer <valid_jwt>"——执行时平台会自动替换为真实 token；
   禁止使用其他占位写法或编造 token 内容
+- 【负向凭证占位】测试"无效/过期凭证被拒绝"的用例，用 "Bearer <invalid_jwt>" /
+  "Bearer <expired_jwt>"（平台原样发送，服务端返回 401/403 正是预期）；
+  严禁给这类负向用例写 <valid_jwt>——会被替换为有效 token，用例意图被破坏
 - 【鉴权顺序】服务通常先校验鉴权再校验参数：无 token / 无效 token 时请求先得到 401，
   到不了参数校验/业务逻辑——所以"聚焦参数校验/业务分支"的用例必须先解决凭证问题，
   而不是"去掉 token 来聚焦"（那是方向性错误）
@@ -323,33 +346,12 @@ def build_feedback_prompt(feature: dict[str, Any], cases: list[dict[str, Any]],
 """
 
 
-def feedback_refine_cases(feature: dict[str, Any], cases: list[dict[str, Any]],
-                          structured: dict[str, Any], provider: str = "deepseek",
-                          case_count: int = 10,
-                          llm_invoke: Callable[[str, str], str] | None = None,
-                          **llm_kwargs: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """单 Agent 回灌：诊断失败 + 产出修正后用例集。
-
-    Args:
-        feature: 功能点档案 dict
-        cases: 该功能点的原用例（dict 列表）
-        structured: structure_failures() 中属于该 entry 的部分（含 failures/stats/aggregate_hints）
-        provider: LLM 提供商
-        case_count: 目标用例条数
-        llm_invoke: 可注入的 LLM 回调（默认走独立 llm_client）
-
-    Returns:
-        (diagnosis 列表, 修正后用例 dict 列表)
-    """
-    prompt = build_feedback_prompt(feature, cases, structured, case_count=case_count)
-    invoke = llm_invoke or (lambda p, prov: _default_llm_invoke(p, prov, **llm_kwargs))
-    response = invoke(prompt, provider)
-
-    # 解析输出对象（diagnosis + cases）。cases 提取失败时退回纯数组模式（LLM 可能只输出用例数组）
+def _parse_diagnosis_cases(response: str) -> tuple[list[dict[str, Any]], Any]:
+    """解析回灌响应（diagnosis + cases）。cases 提取失败时退回纯数组模式
+    （LLM 可能只输出用例数组）。供单次回灌与工具化回灌共用。"""
     from .review import _extract_json_object
 
     diagnosis: list[dict[str, Any]] = []
-    refined_dicts: list[dict[str, Any]] = []
     obj_text = _extract_json_object(response)
     raw_cases: Any = None
     if obj_text:
@@ -377,6 +379,31 @@ def feedback_refine_cases(feature: dict[str, Any], cases: list[dict[str, Any]],
         if not array_text:
             raise ValueError("无法从 LLM 响应中提取诊断/用例 JSON")
         raw_cases = _parse_llm_json(array_text)
+    return diagnosis, raw_cases
+
+
+def feedback_refine_cases(feature: dict[str, Any], cases: list[dict[str, Any]],
+                          structured: dict[str, Any], provider: str = "deepseek",
+                          case_count: int = 10,
+                          llm_invoke: Callable[[str, str], str] | None = None,
+                          **llm_kwargs: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """单 Agent 回灌：诊断失败 + 产出修正后用例集。
+
+    Args:
+        feature: 功能点档案 dict
+        cases: 该功能点的原用例（dict 列表）
+        structured: structure_failures() 中属于该 entry 的部分（含 failures/stats/aggregate_hints）
+        provider: LLM 提供商
+        case_count: 目标用例条数
+        llm_invoke: 可注入的 LLM 回调（默认走独立 llm_client）
+
+    Returns:
+        (diagnosis 列表, 修正后用例 dict 列表)
+    """
+    prompt = build_feedback_prompt(feature, cases, structured, case_count=case_count)
+    invoke = llm_invoke or (lambda p, prov: _default_llm_invoke(p, prov, **llm_kwargs))
+    response = invoke(prompt, provider)
+    diagnosis, raw_cases = _parse_diagnosis_cases(response)
 
     # 复用用例校验（api 形态：request 必须是合法 HTTP 请求）
     validated = _validate_test_cases(raw_cases, case_count if isinstance(case_count, int) else 15)
@@ -384,6 +411,88 @@ def feedback_refine_cases(feature: dict[str, Any], cases: list[dict[str, Any]],
         raise ValueError("LLM 未返回任何合法测试用例")
     refined_dicts = [c.to_dict() for c in validated]
     return diagnosis, refined_dicts
+
+
+# ---------------- 工具化回灌（B Agent 第一步：诊断时读被测源码，7.7.51） ----------------
+_FEEDBACK_READ_TOOLS = [{
+    "type": "function",
+    "function": {
+        "name": "read_source",
+        "description": "读取被测项目源码片段（带行号）。当失败原因存疑（尤其 5xx、"
+                       "需要判断是用例错还是服务端缺陷）时，先读相关代码验证假设再下结论。",
+        "parameters": {"type": "object", "properties": {
+            "file": {"type": "string", "description": "相对被测项目根的文件路径"},
+            "start": {"type": "integer", "description": "起始行（默认 1）"},
+            "end": {"type": "integer", "description": "结束行（默认 400）"}},
+            "required": ["file"]}}},
+]
+
+_FEEDBACK_TOOLS_APPENDIX = """
+
+【可用工具】read_source(file, start, end)——读取被测项目源码片段（路径相对项目根）。
+工作方式：若你需要查看代码来确认失败原因，输出 tool_calls 调用 read_source，
+平台会返回代码片段；确认结论后，最终一轮输出【输出格式】要求的 JSON（不要带 tool_calls）。
+诊断明确、无需看代码时可直接输出最终 JSON，不必调用工具。
+【提示】功能点档案中的控制点/签名含源文件路径，可从那里开始读。"""
+
+
+def feedback_refine_cases_with_tools(feature: dict[str, Any], cases: list[dict[str, Any]],
+                                     structured: dict[str, Any], provider: str = "deepseek",
+                                     case_count: int = 10,
+                                     project_root: str = "",
+                                     max_turns: int = 6,
+                                     llm_client: Any = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """工具化回灌：与 feedback_refine_cases 同一任务，但 Agent 可调用 read_source
+    查看被测源码后再下结论（7.7.12 设想的 B Agent 工具化第一小节）。
+
+    与 FixAgent 复用同一个 read_source 实现（read_source_snippet，含路径沙箱）；
+    只读不写——回灌 Agent 没有 edit 权限，改的是用例不是被测代码。
+    LLM 不调用工具时行为退化为单次调用（多一层系统提示的开销）。
+
+    Returns:
+        (diagnosis 列表, 修正后用例 dict 列表)
+    """
+    from ..llm.client import LLMClient
+    from .fixer import read_source_snippet, FixAgent
+
+    prompt = build_feedback_prompt(feature, cases, structured, case_count=case_count)
+    messages = [
+        {"role": "system", "content": (
+            "你是测试用例诊断与修正专家。基于给出的执行失败证据修正测试用例。"
+            "你可以用 read_source 工具查看被测项目源码来验证失败原因——"
+            "但禁止修改被测代码，你的产出只有诊断结论和修正后的用例。"
+            "最终必须输出【输出格式】要求的 JSON。")},
+        {"role": "user", "content": prompt + _FEEDBACK_TOOLS_APPENDIX},
+    ]
+    client = llm_client or LLMClient(provider=provider)
+    response = ""
+    for _turn in range(1, max_turns + 1):
+        message = client.chat_raw(messages, temperature=0.2,
+                                  tools=_FEEDBACK_READ_TOOLS)
+        messages.append(message)
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            response = message.get("content") or ""
+            break
+        for tc in tool_calls:
+            try:
+                fn = json.loads(tc["function"]["arguments"] or "{}")
+                result = read_source_snippet(
+                    project_root, str(fn.get("file", "")),
+                    int(fn.get("start") or 1), int(fn.get("end") or 400),
+                    deny_parts=FixAgent._DENY_PARTS)
+            except Exception as e:
+                result = f"错误：工具调用失败 {e}"
+            messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                             "content": result})
+    if not response:
+        raise ValueError(f"工具化回灌在 {max_turns} 轮内未得到最终诊断结果")
+
+    diagnosis, raw_cases = _parse_diagnosis_cases(response)
+    validated = _validate_test_cases(raw_cases, case_count if isinstance(case_count, int) else 15)
+    if not validated:
+        raise ValueError("LLM 未返回任何合法测试用例")
+    return diagnosis, [c.to_dict() for c in validated]
 
 
 if __name__ == "__main__":
