@@ -145,11 +145,34 @@ class FixAgent:
 
     # ---------------- 工具实现 ----------------
 
+    # 敏感路径拒绝清单（路径任一部分/文件名命中即拒绝）：
+    # .git（版本库内部）/.env*（secrets——读入即泄露给 LLM API）/.github（CI 注入面）等
+    _DENY_PARTS = {".git", ".env", ".config", ".github", ".ssh", "secrets",
+                   "node_modules", ".venv", "venv"}
+
+    def _safe_path(self, file: str) -> tuple[Path | None, str]:
+        """统一路径安全解析：①resolve 后必须位于项目根之内（祖先判断，非前缀匹配——
+        startswith 会被兄弟目录 /proj2 绕过）；②命中敏感拒绝清单则拒绝。
+        返回 (安全路径, 错误信息)——安全时错误为空。"""
+        try:
+            root = Path(self.project).resolve()
+            p = (root / file).resolve()
+        except Exception as e:
+            return None, f"错误：路径解析失败 {e}"
+        if p != root and root not in p.parents:
+            return None, "错误：路径越界（只能访问被测项目目录内的文件）"
+        for part in p.parts:
+            if part in self._DENY_PARTS:
+                return None, f"错误：禁止访问敏感路径（{part}/）"
+        name = p.name.lower()
+        if name.startswith(".env") or name.endswith((".pem", ".key")) or name.startswith("id_"):
+            return None, "错误：禁止访问敏感文件（密钥/凭证类）"
+        return p, ""
+
     def _tool_read_source(self, file: str, start: int = 1, end: int = 400) -> str:
-        root = self.project
-        p = (Path(root) / file).resolve()
-        if not str(p).startswith(str(Path(root).resolve())):
-            return "错误：路径越界"
+        p, err = self._safe_path(file)
+        if err:
+            return err
         if not p.exists():
             return f"错误：文件不存在 {file}"
         lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -159,9 +182,9 @@ class FixAgent:
         return f"{file}（行 {start}-{end}，共 {len(lines)} 行）:\n" + "\n".join(numbered)
 
     def _tool_edit(self, file: str, old: str, new: str) -> str:
-        p = (Path(self.project) / file).resolve()
-        if not str(p).startswith(str(Path(self.project).resolve())):
-            return "错误：路径越界"
+        p, err = self._safe_path(file)
+        if err:
+            return err
         if not p.exists():
             return f"错误：文件不存在 {file}"
         # 代码级防线：禁止修改测试文件（复现用例锁定原则在源码侧的延伸）
