@@ -20,6 +20,7 @@ LLM 在此基础上做语义诊断——规则给信号，LLM 给结论，避免
 
 from typing import Any, Callable
 
+from .assertions import INTENT_LABEL
 from ..core.generate import (_extract_json_array, _default_llm_invoke,
                               _parse_llm_json, _validate_test_cases)
 
@@ -51,6 +52,12 @@ def classify_failure(result: dict[str, Any]) -> tuple[str, str]:
     if verdict == "SKIPPED":
         return CAT_CASE, "用例不可执行（缺 URL 或非 HTTP 方法），需修正 request 构造"
     if verdict == "FAIL":
+        # 意图断言证据优先（7.7.45）：意图不符的 FAIL，正确预期就在 acceptable 里
+        a = result.get("assertion") or {}
+        if a.get("mode") == "intent" and a.get("acceptable"):
+            return CAT_CASE, (f"意图断言不符: 用例意图「{INTENT_LABEL.get(a.get('intent'), a.get('intent'))}」"
+                              f"可接受状态 {a['acceptable']}，实际 {status}——预期状态码写错，"
+                              f"修预期为 {a['acceptable']} 中符合业务语义的值即可（服务端行为本身正常）")
         desc = str(result.get("description") or "")
         if any(kw in desc for kw in ("故障注入", "模拟数据库", "数据库异常", "模拟异常",
                                      "模拟服务", "内部状态", "mock 数据库")):

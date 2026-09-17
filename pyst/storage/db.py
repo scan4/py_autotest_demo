@@ -365,11 +365,13 @@ class TestCaseStore:
         for g in groups:
             if len({x["sd"] for x in g}) <= 1:
                 continue    # 同 root（规则 1/2/3 已管），组内多个 entry 视为不同功能点
+            # 用 id（自增，单调）判定"最新"——created_at 秒级精度在快速连续操作时
+            # 无法区分先后，导致归并结果不确定（实测同秒创建时挂/过随机）
             latest_sd = max({x["sd"] for x in g},
-                            key=lambda d: max(x["ca"] for x in g if x["sd"] == d))
-            keep_ca = max(x["ca"] for x in g if x["sd"] == latest_sd)
+                            key=lambda d: max(x["id"] for x in g if x["sd"] == d))
+            keep_id = max(x["id"] for x in g if x["sd"] == latest_sd)
             for x in g:
-                if x["sd"] != latest_sd or x["ca"] < keep_ca:
+                if x["sd"] != latest_sd or x["id"] < keep_id:
                     self.delete(x["id"])
                     removed += 1
         # 规则 2/3：批内签名/描述去重（保留最新 id）

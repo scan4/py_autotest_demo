@@ -127,7 +127,8 @@ class FixAgent:
 
     def __init__(self, task_id: str, session, source_dir: str, finding: dict[str, Any],
                  base: str, token: str, service_cmd: str, provider: str,
-                 max_turns: int = 10, log_fn: Callable[[str], None] | None = None):
+                 max_turns: int = 10, log_fn: Callable[[str], None] | None = None,
+                 llm_client: "LLMClient | None" = None):
         self.task_id = task_id
         self.task: dict[str, Any] = {"status": "running", "log": [], "patch": "",
                                      "success": False, "summary": "", "branch": ""}
@@ -140,6 +141,7 @@ class FixAgent:
         self.provider = provider
         self.max_turns = max_turns
         self.project = ""
+        self.llm_client = llm_client        # 可注入（测试用 fake）；None 时 run() 内构造
         self.last_results: list[dict] = []   # 最近一次回归的逐条结果（验收对比用）
         self.log = log_fn or (lambda m: None)
 
@@ -318,7 +320,7 @@ class FixAgent:
                 "再 edit 修改，然后 run_tests 验证。目标：空白/非法输入被校验拒绝，"
                 "同时保持合法输入仍正常工作。")},
         ]
-        client = LLMClient(provider=self.provider)
+        client = self.llm_client or LLMClient(provider=self.provider)
         replay_status = None
         success = False
         summary = ""

@@ -56,33 +56,37 @@ def _keyword_assert(resp_text: str, expected_text: str) -> bool | None:
 
 
 def _assert(case: dict[str, Any], resp: requests.Response, result: dict[str, Any]) -> dict[str, Any]:
-    """执行断言：expected_status 精确比对 + 关键词兜底，判定 PASS/FAIL/WARN。"""
+    """执行断言（7.7.45 意图断言增强）：expected_status 精确比对 + 意图语义断言 + 关键词兜底。
+
+    判定优先级（pyst/eval/assertions.py）：
+      1. 预期码精确匹配 → PASS（附语义矛盾检查）
+      2. 意图明确且实际 ∈ 可接受集 → PASS（预期码偏差标注为"预期码写错"）
+      3. 意图明确且实际 ∉ 可接受集 → FAIL（意图不符）
+      4. 探查/意图不明确 → 退回精确对比；无预期码 → 关键词兜底 / WARN
+    """
+    from .assertions import assert_case
     exp_status = case.get("expected_status")
     if exp_status is not None:
         result["expected_status"] = exp_status
-        if resp.status_code == exp_status:
+    a = assert_case(case, resp.status_code, resp.text or "")
+    result["pass"] = {"PASS": True, "FAIL": False}.get(a["verdict"])
+    result["verdict"] = a["verdict"]
+    result["reason"] = a["reason"]
+    result["assertion"] = {"mode": a["mode"], "intent": a["intent"],
+                           "acceptable": a["acceptable"], "checks": a["checks"]}
+    if a["verdict"] == "WARN" and exp_status is None:
+        expected_text = " ".join(str(x) for x in (case.get("expected_results") or []))
+        kw = _keyword_assert(resp.text or "", expected_text)
+        if kw is True:
             result["pass"] = True
             result["verdict"] = "PASS"
-            result["reason"] = f"实际状态码 {resp.status_code} == 预期 {exp_status}"
-        else:
+            result["reason"] = f"响应与预期特征匹配（关键词兜底; 状态码分类: {_classify_status_code(resp.status_code)}）"
+            result["assertion"]["mode"] = "fallback"
+        elif kw is False:
             result["pass"] = False
             result["verdict"] = "FAIL"
-            result["reason"] = f"实际状态码 {resp.status_code} != 预期 {exp_status}"
-        return result
-    expected_text = " ".join(str(x) for x in (case.get("expected_results") or []))
-    kw = _keyword_assert(resp.text or "", expected_text)
-    if kw is True:
-        result["pass"] = True
-        result["verdict"] = "PASS"
-        result["reason"] = f"响应与预期特征匹配（状态码分类: {_classify_status_code(resp.status_code)}）"
-    elif kw is False:
-        result["pass"] = False
-        result["verdict"] = "FAIL"
-        result["reason"] = "响应与预期特征冲突"
-    else:
-        result["pass"] = None
-        result["verdict"] = "WARN"
-        result["reason"] = "无法自动断言（无预期状态码且响应无匹配特征），请人工判断"
+            result["reason"] = "响应与预期特征冲突（关键词兜底）"
+            result["assertion"]["mode"] = "fallback"
     return result
 
 
@@ -203,10 +207,10 @@ def _expand_long_value(v: Any) -> Any:
         if s.startswith("<") and s.endswith(">") and "超长" in s:
             import re as _re
             m = _re.search(r"(\d{2,5})\s*字符", s)
-            n = int(m.group(1)) if m else _LONG_PLACEHOLDER_DEFAULT_LEN
-            if "恰好" in s or "等于" in s:
-                return "A" * n
-            return "A" * (n * 2)
+            if m:
+                n = int(m.group(1))
+                return "A" * (n if ("恰好" in s or "等于" in s) else n * 2)
+            return "A" * _LONG_PLACEHOLDER_DEFAULT_LEN
         return v
     if isinstance(v, dict):
         return {k: _expand_long_value(x) for k, x in v.items()}
