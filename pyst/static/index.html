@@ -1145,6 +1145,8 @@ async function startFix(findingId) {
   const au = ($('authUserInput') ? $('authUserInput').value.trim() : '');
   const ap = ($('authPassInput') ? $('authPassInput').value : '');
   if (au && ap) { if (lp) auth.login_path = lp; auth.username = au; auth.password = ap; }
+  // 前端防抖：修复进行中禁用所有修复按钮（后端另有互斥锁兜底）
+  document.querySelectorAll('button[onclick^="startFix"]').forEach(b => b.disabled = true);
   log(`AI 修复启动（缺陷 #${findingId}）...`);
   try {
     const data = await api('/api/fix/start', {
@@ -1156,6 +1158,10 @@ async function startFix(findingId) {
   } catch(e) { log('AI 修复启动失败: ' + e.message); }
 }
 
+function _restoreFixButtons() {
+  document.querySelectorAll('button[onclick^="startFix"]').forEach(b => b.disabled = false);
+}
+
 function pollFix(taskId, findingId) {
   let shown = 0;
   const timer = setInterval(async () => {
@@ -1164,6 +1170,7 @@ function pollFix(taskId, findingId) {
       while (shown < t.log.length) { log('[fix] ' + t.log[shown]); shown++; }
       if (t.status === 'done') {
         clearInterval(timer);
+        _restoreFixButtons();   // 任务结束恢复修复按钮
         const box = $('bugReplay_' + findingId);
         if (t.success) {
           box.innerHTML = `<div style="font-size:12px;color:#166534;margin-top:4px">🎉 ${escapeHtml(t.summary)}
@@ -1176,7 +1183,7 @@ function pollFix(taskId, findingId) {
         }
         loadBugs();
       }
-    } catch(e) { clearInterval(timer); log('修复状态查询失败: ' + e.message); }
+    } catch(e) { clearInterval(timer); _restoreFixButtons(); log('修复状态查询失败: ' + e.message); }
   }, 3000);
 }
 

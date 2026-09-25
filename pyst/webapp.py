@@ -26,6 +26,7 @@ pythonTest Web 服务（独立，不依赖 TestBrain）
 
 import os
 import re
+import threading
 import uuid
 import time
 import urllib.parse
@@ -1311,6 +1312,12 @@ class FixStartRequest(BaseModel):
     confirm: bool = False       # 显式授权开关：AI 修复为高权限操作，必须确认
 
 
+# AI 修复全局互斥：修复涉及共享资源（被测项目 git 工作区、被测服务进程），
+# 并行修复线程会互踩工作区/同时重启服务/互相污染验收结果——同一时间只允许一个。
+# 双保险：running 检测给友好提示，锁的非阻塞 acquire 防"同时通过检测"的竞态
+_fix_lock = threading.Lock()
+
+
 @app.post("/api/fix/start")
 def fix_start(req: FixStartRequest):
     if not req.source_dir:
@@ -1340,14 +1347,29 @@ def fix_start(req: FixStartRequest):
         project=req.source_dir, port=port)
     token = _resolve_token(session, base, req.auth)
 
+    # 并发防护（7.7.54）：running 检测 + 非阻塞锁，双请求同时通过检测时锁只放行一个
+    running = [tid for tid, t in _fix_tasks.items() if t.get("status") == "running"]
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"已有 AI 修复任务在运行（task_id={running[0]}）——请等待其完成后再启动新修复")
+    if not _fix_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="另一个修复请求正在启动，请稍后重试")
+
     task_id = uuid.uuid4().hex[:8]
     from .eval.fixer import FixAgent
     agent = FixAgent(task_id, session, req.source_dir, finding, base, token,
                      service_cmd, req.provider, max_turns=min(req.max_turns, 20),
                      log_fn=lambda m: _fix_tasks[task_id]["log"].append(m))
     _fix_tasks[task_id] = agent.task
-    import threading
-    threading.Thread(target=agent.run, daemon=True).start()
+
+    def _run_and_release():
+        try:
+            agent.run()
+        finally:
+            _fix_lock.release()      # 任务结束（无论成败）释放互斥锁
+
+    threading.Thread(target=_run_and_release, daemon=True).start()
     return {"task_id": task_id, "status": "running"}
 
 

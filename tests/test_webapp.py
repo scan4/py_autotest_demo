@@ -140,3 +140,26 @@ def test_replay_still_reproduces_path(client, monkeypatch, tmp_path):
     data = r.json()
     assert data["still_reproduces"] is True
     assert "保留登记" in data["suggestion"]
+
+
+# ---------------- 7.7.54 AI 修复并发防护 ----------------
+
+def test_fix_start_rejects_concurrent_run(client, monkeypatch, tmp_path):
+    """已有修复任务 running 时，新的修复请求必须 409（防并行线程互踩 git 工作区）。"""
+    tc, mp = client
+    src = str(tmp_path / "proj")
+    os.makedirs(src, exist_ok=True)
+    from pyst.storage.db import TestCaseStore
+    fid = TestCaseStore(webapp._DB_PATH).upsert_bug_finding(
+        "e1", src, "负数 limit", {"method": "GET", "url": "/x"}, 422,
+        {"actual_status": 500})
+    webapp._fix_tasks["fake_running"] = {"status": "running", "log": [], "success": False,
+                                         "summary": "", "branch": "", "patch": ""}
+    try:
+        r = tc.post("/api/fix/start", json={
+            "source_dir": src, "finding_id": fid, "base_url": "http://x",
+            "provider": "deepseek", "max_turns": 3, "confirm": True})
+        assert r.status_code == 409, r.text
+        assert "已有 AI 修复任务在运行" in r.json()["detail"]
+    finally:
+        webapp._fix_tasks.pop("fake_running", None)
