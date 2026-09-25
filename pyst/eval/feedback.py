@@ -85,6 +85,10 @@ def classify_failure(result: dict[str, Any]) -> tuple[str, str]:
                               "无法控制服务内部，实际发送的是普通请求（必然 200）。"
                               "此类场景不可自动化，应剔除出用例集或改为外部可观测的等价场景")
         snippet = str(result.get("response_snippet") or "")
+        if status == 400 and "already exists" in snippet:
+            return CAT_CASE, ("测试数据重复：该资源的唯一键（如 email）已存在——上一轮执行已经创建过。"
+                              "正向创建类用例的唯一键值必须每轮唯一：email 用 '前缀.<random_uuid>@example.com' "
+                              "占位（执行时自动替换为新随机值），或用不存在的值；这不是服务端缺陷")
         if status in (400, 422) and "json_invalid" in snippet:
             return CAT_CASE, (f"实际 {status}：请求体不是合法 JSON（type=json_invalid）——"
                               "body 构造错误或发送格式与 Content-Type 不符，先核对 body 与请求头")

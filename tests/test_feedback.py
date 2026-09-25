@@ -177,3 +177,13 @@ def test_feedback_with_tools_loop(tmp_path):
     # 工具结果确实进入了对话（LLM 第二轮看到 tool 消息）
     assert any(m.get("role") == "tool" and "create" in m.get("content", "")
                for m in llm.calls[1])
+
+
+def test_classify_duplicate_email_400():
+    """400 "already exists" → 测试数据重复专项提示（7.7.55）。"""
+    from pyst.eval.feedback import classify_failure, CAT_CASE
+    cat, hint = classify_failure({
+        "verdict": "FAIL", "status": 400, "expected_status": 200,
+        "description": "超级管理员创建新用户",
+        "response_snippet": '{"detail": "The user with this email already exists in the system."}'})
+    assert cat == CAT_CASE and "唯一" in hint and "random_uuid" in hint
