@@ -297,6 +297,18 @@ class CallResolver:
         for i in range(len(parts) - 1, 0, -1):      # 至少留一段符号名
             if ".".join(parts[:i]) in self.index.module_paths:
                 return qual if qual in self.index.symbols else None
+        # 后缀对齐（7.7.57）：root 不在包根时，import 语句写的模块名（如 app.crud.x）
+        # 与索引模块名（backend.app.crud.x，root=项目根多了 backend 前缀）前缀不一致，
+        # 上一段循环必然失败 → 本地跨文件调用被误标 external（实测 users.py 的
+        # crud.create_user 漏配，全图 resolved 仅 29/843）。解法：点前缀若是某索引
+        # 模块名的后缀 → 按该索引模块重写 qual，重写后在符号表命中才采信（自然过滤歧义）
+        for i in range(len(parts) - 1, 0, -1):
+            prefix = ".".join(parts[:i])
+            for mp in sorted(self.index.module_paths):
+                if mp == prefix or mp.endswith("." + prefix):
+                    rewritten = mp + qual[len(prefix):]
+                    if rewritten in self.index.symbols:
+                        return rewritten
         return None
 
     def _substitute(self, expr: str, module: str) -> str:
