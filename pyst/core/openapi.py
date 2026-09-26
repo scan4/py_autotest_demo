@@ -236,6 +236,16 @@ def match_endpoints(endpoints: list[dict[str, Any]],
                 strong.append(ep)
             else:
                 by_name.append(ep)
+        elif func_name and op_id and ep.get("url") and ep.get("methods"):
+            # 原生 FastAPI 默认格式（无自定义 generate_unique_id）：op_id 是确定性构造——
+            # {函数名}{URL 非词字符转下划线}_{method 小写}，如 url=/api/v1/users/ method=POST
+            # → create_user_api_v1_users__post。用本 endpoint 的 url/method 反算期望值精确比对：
+            # 同名函数（users/private 两处 create_user）因 path 不同各自唯一命中，天然消歧
+            import re as _re
+            pw = _re.sub(r"\W", "_", str(ep["url"]))
+            method0 = str((ep.get("methods") or [""])[0]).lower()
+            if op_id == f"{func_name}{pw}_{method0}":
+                strong.append(ep)
         elif not op_id and func_name and func_name in (ep.get("url") or ""):
             # spec 无 operationId：靠 path 字段兜底（如 /download_file/）
             by_path.append(ep)
