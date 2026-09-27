@@ -104,11 +104,22 @@ class FeaturePoint:
         import json as _json
 
         # 入口自身
+        # 控制流指纹剥离行号（7.7.58 实测）：str(ControlSite) 含 line/start/end，
+        # 插一行日志让 if 从 L2 挪到 L3 → 指纹变 → 缓存失效——纯实现细节的编辑
+        # 不应触发重新生成（多花 LLM 调用且正确性无损）。指纹只保留语义字段，
+        # 行号留给 diff_with 做对比用（它需要定位，指纹不需要）
+        def _semantic_controls(controls) -> list[str]:
+            out = []
+            for c in controls:
+                out.append("|".join(f"{k}={c.get(k)}" for k in
+                                    ("kind", "cond", "branch", "semantics") if k in c))
+            return sorted(out)
+
         parts = [
             f"depth={self.max_depth}",
             self.signature,
             sorted(self.decorators),
-            sorted(str(x) for x in self.control_sites),
+            _semantic_controls(self.control_sites),
             _json.dumps(self.interface, sort_keys=True, ensure_ascii=False) if self.interface else "",
         ]
         # 下游调用链：每个本地被调符号的实现（签名 + 控制流 + 该节点的下游）
@@ -119,7 +130,7 @@ class FeaturePoint:
                 fi = index.function_infos.get(callee)
                 if fi is not None:
                     sig = _format_signature(fi)
-                    parts.append(f"d{depth}|{callee}|{sig}|{sorted(str(c) for c in fi.controls)}")
+                    parts.append(f"d{depth}|{callee}|{sig}|{_semantic_controls(fi.controls)}")
         raw = ";;".join(str(p) for p in parts)
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
