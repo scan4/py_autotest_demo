@@ -594,7 +594,7 @@ def review(req: ReviewRequest):
     """AI 评审生成的测试用例。"""
     if not req.source_dir:
         raise HTTPException(status_code=400, detail="请提供 source_dir")
-    from .eval.review import review_test_cases
+    from .eval.review import review_test_cases_with_tools
 
     session = _get_or_create_session(req.source_dir)
     if not session.test_cases:
@@ -617,7 +617,8 @@ def review(req: ReviewRequest):
         if not fp:
             fp = {"entry": entry, "signature": entry, "docstring": "", "control_sites": []}
         try:
-            reviews[entry] = review_test_cases(fp, cases, provider=req.provider)
+            reviews[entry] = review_test_cases_with_tools(
+                fp, cases, provider=req.provider, project_root=req.source_dir)
         except Exception as e:
             reviews[entry] = {"score": 0, "strengths": [], "weaknesses": [str(e)],
                               "suggestions": [], "missing_scenarios": [], "recommendation": "评审失败", "comments": str(e)}

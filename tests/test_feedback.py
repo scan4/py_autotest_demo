@@ -187,3 +187,34 @@ def test_classify_duplicate_email_400():
         "description": "超级管理员创建新用户",
         "response_snippet": '{"detail": "The user with this email already exists in the system."}'})
     assert cat == CAT_CASE and "唯一" in hint and "random_uuid" in hint
+
+
+# ---------------- 7.7.59 工具化评审（评审 Agent 复用 read_source） ----------------
+
+class _ReviewToolLLM:
+    """第一轮调 read_source，第二轮返回评审结论 JSON。"""
+    def __init__(self):
+        self.calls = []
+
+    def chat_raw(self, messages, tools=None, **kw):
+        self.calls.append(list(messages))
+        if messages[-1].get("role") == "tool":
+            return {"role": "assistant", "content":
+                    '{"score": 9, "strengths": ["覆盖完整"], "weaknesses": [], '
+                    '"suggestions": [], "missing_scenarios": [], "recommendation": "通过"}'}
+        return {"role": "assistant", "tool_calls": [{"id": "t1", "function": {
+            "name": "read_source", "arguments": '{"file": "app/m.py", "start": 1, "end": 20}'}}]}
+
+
+def test_review_with_tools_loop(tmp_path):
+    """评审 Agent 调 read_source 核实代码后输出结论（7.7.59）。"""
+    from pyst.eval.review import review_test_cases_with_tools
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "m.py").write_text("def create():\n    pass\n", encoding="utf-8")
+    llm = _ReviewToolLLM()
+    result = review_test_cases_with_tools(
+        {"entry": "e", "signature": "def x()", "control_sites": []},
+        [], project_root=str(tmp_path), llm_client=llm)
+    assert result["score"] == 9 and result["recommendation"] == "通过"
+    assert any(m.get("role") == "tool" and "create" in m.get("content", "")
+               for m in llm.calls[1])
